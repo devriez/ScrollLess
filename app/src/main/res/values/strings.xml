@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Black &amp; White</string>
+    <string name="accessibility_service_label">Black &amp; White monitor</string>
+    <string name="accessibility_service_description">Detects selected apps and switches the screen filter while they are open.</string>
+</resources>
