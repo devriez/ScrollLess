@@ -18,12 +18,15 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import java.time.LocalTime
 
 class BlackWhiteAccessibilityService : AccessibilityService() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private lateinit var settingsStore: SettingsStore
     private var currentSettings = BlackWhiteSettings()
     private var currentPackageName: String? = null
+    private var usagePackageName: String? = null
+    private var usageStartedAtMillis: Long = 0L
     private var lastSelectedPackageName: String? = null
     private var lastSelectedAtMillis: Long = 0L
     private var overlayView: View? = null
@@ -43,6 +46,7 @@ class BlackWhiteAccessibilityService : AccessibilityService() {
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         val packageName = event?.packageName?.toString() ?: return
+        recordUsageIfPackageChanged(packageName)
         currentPackageName = packageName
         updateFilterForCurrentPackage()
     }
@@ -52,17 +56,36 @@ class BlackWhiteAccessibilityService : AccessibilityService() {
     }
 
     override fun onDestroy() {
+        recordUsageUntilNow()
         pendingClearJob?.cancel()
         clearFilters()
         scope.cancel()
         super.onDestroy()
     }
 
+    private fun recordUsageIfPackageChanged(nextPackageName: String) {
+        if (nextPackageName == usagePackageName) return
+        recordUsageUntilNow()
+        usagePackageName = nextPackageName
+        usageStartedAtMillis = System.currentTimeMillis()
+    }
+
+    private fun recordUsageUntilNow() {
+        val packageName = usagePackageName ?: return
+        val startedAt = usageStartedAtMillis
+        if (startedAt <= 0L) return
+        val duration = System.currentTimeMillis() - startedAt
+        if (duration < 1_000L) return
+        scope.launch(Dispatchers.IO) {
+            settingsStore.addUsage(packageName, duration)
+        }
+    }
+
     private fun updateFilterForCurrentPackage() {
         val foregroundPackageName = selectedForegroundPackageName(allowStickyFallback = true)
         val shouldEnable = foregroundPackageName != null &&
-            currentSettings.isQuickToggleEnabled &&
-            !currentSettings.isPaused()
+            !currentSettings.isPaused() &&
+            currentSettings.isWithinSchedule(LocalTime.now().hour)
         writeDebugStatus(
             decision = if (shouldEnable) "enable/keep" else "schedule clear",
             foregroundPackageName = foregroundPackageName
@@ -94,8 +117,8 @@ class BlackWhiteAccessibilityService : AccessibilityService() {
         pendingClearJob = scope.launch {
             delay(FILTER_CLEAR_DELAY_MS)
             val selectedForegroundPackage = selectedActiveWindowPackageName()
-            val shouldStillClear = !currentSettings.isQuickToggleEnabled ||
-                currentSettings.isPaused() ||
+            val shouldStillClear = currentSettings.isPaused() ||
+                !currentSettings.isWithinSchedule(LocalTime.now().hour) ||
                 selectedForegroundPackage == null
             writeDebugStatus(
                 decision = if (shouldStillClear) "clear" else "keep after delay",
