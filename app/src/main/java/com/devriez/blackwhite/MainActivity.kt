@@ -1,12 +1,10 @@
 package com.devriez.blackwhite
 
-import android.Manifest
 import android.app.AppOpsManager
 import android.app.usage.UsageStatsManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.os.Bundle
 import android.os.Process
 import android.provider.Settings
@@ -31,7 +29,6 @@ import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Apps
 import androidx.compose.material.icons.filled.Bolt
-import androidx.compose.material.icons.filled.Computer
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.Settings
@@ -127,6 +124,12 @@ fun BlackWhiteApp() {
         nowMillis = System.currentTimeMillis()
     }
 
+    LaunchedEffect(settings.filterMode) {
+        if (settings.filterMode == FilterMode.Full) {
+            store.setFilterMode(FilterMode.Quick)
+        }
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -145,32 +148,30 @@ fun BlackWhiteApp() {
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             item {
+                IntroCard()
+            }
+
+            item {
                 ModeCard(
                     settings = settings,
-                    onModeChange = { mode -> scope.launch { store.setFilterMode(mode) } },
-                    onQuickOverlayAlphaChange = { alpha -> scope.launch { store.setQuickOverlayAlpha(alpha) } }
+                    onQuickOverlayAlphaChange = { alpha -> scope.launch { store.setQuickOverlayAlpha(alpha) } },
+                    onQuickFilterStyleChange = { style -> scope.launch { store.setQuickFilterStyle(style) } }
                 )
             }
 
             if (permissionSnapshot.shouldShowFor(settings.filterMode)) {
                 item {
                     PermissionsCard(
-                        mode = settings.filterMode,
                         snapshot = permissionSnapshot,
                         onOpenAccessibility = { context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
                     )
                 }
             }
 
-            if (settings.isPro && settings.filterMode == FilterMode.Full && !permissionSnapshot.secureSettingsGranted) {
-                item {
-                    FullModeSetupCard()
-                }
-            }
-
             item {
                 PauseCard(
                     settings = settings,
+                    onAppEnabledChange = { enabled -> scope.launch { store.setAppEnabled(enabled) } },
                     onPause = { minutes -> scope.launch { store.pauseFor(minutes) } },
                     onClearPause = { scope.launch { store.clearPause() } },
                     nowMillis = nowMillis
@@ -226,6 +227,19 @@ fun BlackWhiteApp() {
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun IntroCard() {
+    SectionCard {
+        Text("Почему это работает", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "Насыщенные цвета, контрастные элементы и быстрые визуальные награды помогают приложениям удерживать внимание. ScrollLess снижает визуальную привлекательность выбранных приложений, чтобы ими было легче пользоваться осознанно.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = Color(0xFF444444)
+        )
     }
 }
 
@@ -356,25 +370,6 @@ private fun ProgressTable(
 }
 
 @Composable
-private fun FullModeSetupCard() {
-    SectionCard {
-        Text("Полный режим Pro", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-        Spacer(Modifier.height(8.dp))
-        Text(
-            "Чтобы включать настоящий черно-белый режим, один раз подключи телефон к компьютеру и выполни команду:",
-            style = MaterialTheme.typography.bodyMedium,
-            color = Color(0xFF444444)
-        )
-        Spacer(Modifier.height(8.dp))
-        Text(
-            "adb shell pm grant com.devriez.blackwhite android.permission.WRITE_SECURE_SETTINGS",
-            style = MaterialTheme.typography.bodySmall,
-            color = Color(0xFF222222)
-        )
-    }
-}
-
-@Composable
 private fun AppsHeader(
     settings: BlackWhiteSettings,
     expanded: Boolean,
@@ -418,56 +413,48 @@ private fun AppsHeader(
 @Composable
 private fun ModeCard(
     settings: BlackWhiteSettings,
-    onModeChange: (FilterMode) -> Unit,
-    onQuickOverlayAlphaChange: (Int) -> Unit
+    onQuickOverlayAlphaChange: (Int) -> Unit,
+    onQuickFilterStyleChange: (QuickFilterStyle) -> Unit
 ) {
     SectionCard {
-        Text("Режим фильтра", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-        Spacer(Modifier.height(10.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            FilterChip(
-                selected = settings.filterMode == FilterMode.Quick,
-                onClick = { onModeChange(FilterMode.Quick) },
-                label = { Text("Быстрый") },
-                leadingIcon = { Icon(Icons.Default.Bolt, contentDescription = null) }
-            )
-            FilterChip(
-                selected = settings.filterMode == FilterMode.Full,
-                onClick = { onModeChange(FilterMode.Full) },
-                label = { Text("Полный Pro") },
-                leadingIcon = { Icon(Icons.Default.Computer, contentDescription = null) }
-            )
-        }
+        Text("Фильтр", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
         Spacer(Modifier.height(8.dp))
         Text(
-            text = if (settings.filterMode == FilterMode.Quick) {
-                "Работает без компьютера: приложение накладывает нейтральный фильтр поверх выбранных приложений."
-            } else {
-                "Настоящий системный grayscale. Нужна разовая команда ADB с компьютера."
-            },
+            text = "Приложение накладывает нейтральный фильтр поверх выбранных приложений.",
             style = MaterialTheme.typography.bodyMedium,
             color = Color(0xFF444444)
         )
-        if (settings.filterMode == FilterMode.Quick) {
-            Spacer(Modifier.height(12.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Сила быстрого фильтра", modifier = Modifier.weight(1f), fontWeight = FontWeight.Medium)
-                Text("${settings.quickOverlayAlphaPercent()}%")
-            }
-            Slider(
-                value = settings.quickOverlayAlpha.toFloat(),
-                onValueChange = { onQuickOverlayAlphaChange(it.toInt()) },
-                valueRange = BlackWhiteSettings.MIN_QUICK_OVERLAY_ALPHA.toFloat()..
-                    BlackWhiteSettings.MAX_QUICK_OVERLAY_ALPHA.toFloat()
+        Spacer(Modifier.height(12.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilterChip(
+                selected = settings.quickFilterStyle == QuickFilterStyle.Light,
+                onClick = { onQuickFilterStyleChange(QuickFilterStyle.Light) },
+                label = { Text("Светлый") }
             )
-            Spacer(Modifier.height(8.dp))
-            FilterPreview(alpha = settings.quickOverlayAlpha)
+            FilterChip(
+                selected = settings.quickFilterStyle == QuickFilterStyle.Dark,
+                onClick = { onQuickFilterStyleChange(QuickFilterStyle.Dark) },
+                label = { Text("Темный") }
+            )
         }
+        Spacer(Modifier.height(12.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Сила быстрого фильтра", modifier = Modifier.weight(1f), fontWeight = FontWeight.Medium)
+            Text("${settings.quickOverlayAlphaPercent()}%")
+        }
+        Slider(
+            value = settings.quickOverlayAlpha.toFloat(),
+            onValueChange = { onQuickOverlayAlphaChange(it.toInt()) },
+            valueRange = BlackWhiteSettings.MIN_QUICK_OVERLAY_ALPHA.toFloat()..
+                BlackWhiteSettings.MAX_QUICK_OVERLAY_ALPHA.toFloat()
+        )
+        Spacer(Modifier.height(8.dp))
+        FilterPreview(alpha = settings.quickOverlayAlpha, style = settings.quickFilterStyle)
     }
 }
 
 @Composable
-private fun FilterPreview(alpha: Int) {
+private fun FilterPreview(alpha: Int, style: QuickFilterStyle) {
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -488,7 +475,7 @@ private fun FilterPreview(alpha: Int) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(Color(166, 166, 166, alpha))
+                .background(style.overlayColor(alpha))
         )
     }
 }
@@ -504,7 +491,6 @@ private fun ColorPreviewBlock(color: Color, modifier: Modifier = Modifier) {
 
 @Composable
 private fun PermissionsCard(
-    mode: FilterMode,
     snapshot: PermissionSnapshot,
     onOpenAccessibility: () -> Unit
 ) {
@@ -519,22 +505,30 @@ private fun PermissionsCard(
                 Text("Accessibility")
             }
         }
-        if (mode == FilterMode.Full && !snapshot.secureSettingsGranted) {
-            StatusLine(Icons.Default.Computer, "Разрешение для полного режима через компьютер", false)
-        }
     }
 }
 
 @Composable
 private fun PauseCard(
     settings: BlackWhiteSettings,
+    onAppEnabledChange: (Boolean) -> Unit,
     onPause: (Long) -> Unit,
     onClearPause: () -> Unit,
     nowMillis: Long
 ) {
     SectionCard {
-        Text("Пауза", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-        Spacer(Modifier.height(8.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("ScrollLess", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Text(
+                    if (settings.isAppEnabled) "Фильтр включен для выбранных приложений." else "Фильтр временно выключен.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Color(0xFF444444)
+                )
+            }
+            Switch(checked = settings.isAppEnabled, onCheckedChange = onAppEnabledChange)
+        }
+        Spacer(Modifier.height(12.dp))
         PauseControls(
             settings = settings,
             nowMillis = nowMillis,
@@ -755,15 +749,12 @@ private fun Context.loadLaunchableApps(): List<InstalledApp> {
 
 data class PermissionSnapshot(
     val accessibilityEnabled: Boolean,
-    val secureSettingsGranted: Boolean,
     val usageStatsGranted: Boolean
 ) {
     companion object {
         fun from(context: Context): PermissionSnapshot {
             return PermissionSnapshot(
                 accessibilityEnabled = context.isAccessibilityServiceEnabled(),
-                secureSettingsGranted = context.checkSelfPermission(Manifest.permission.WRITE_SECURE_SETTINGS) ==
-                    PackageManager.PERMISSION_GRANTED,
                 usageStatsGranted = context.hasUsageStatsPermission()
             )
         }
@@ -772,8 +763,7 @@ data class PermissionSnapshot(
 
 private fun PermissionSnapshot.shouldShowFor(mode: FilterMode): Boolean {
     val needsAccessibility = !accessibilityEnabled
-    val needsSecureSettings = mode == FilterMode.Full && !secureSettingsGranted
-    return needsAccessibility || needsSecureSettings
+    return needsAccessibility
 }
 
 private fun Context.isAccessibilityServiceEnabled(): Boolean {
@@ -839,5 +829,12 @@ private fun Long.progressComparedTo(previousMillis: Long): String {
         "На ${(-delta).formatDuration()} меньше, чем вчера ($percent%)."
     } else {
         "На ${delta.formatDuration()} больше, чем вчера ($percent%)."
+    }
+}
+
+private fun QuickFilterStyle.overlayColor(alpha: Int): Color {
+    return when (this) {
+        QuickFilterStyle.Light -> Color(166, 166, 166, alpha)
+        QuickFilterStyle.Dark -> Color(24, 24, 24, alpha)
     }
 }

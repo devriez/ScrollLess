@@ -20,11 +20,18 @@ enum class FilterMode {
     Full
 }
 
+enum class QuickFilterStyle {
+    Light,
+    Dark
+}
+
 data class BlackWhiteSettings(
     val selectedPackages: Set<String> = emptySet(),
     val filterMode: FilterMode = FilterMode.Quick,
     val isPro: Boolean = false,
+    val isAppEnabled: Boolean = true,
     val quickOverlayAlpha: Int = DEFAULT_QUICK_OVERLAY_ALPHA,
+    val quickFilterStyle: QuickFilterStyle = QuickFilterStyle.Light,
     val pausedUntilMillis: Long = 0L,
     val pauseCountDateEpochDay: Long = 0L,
     val pauseCountToday: Int = 0,
@@ -79,7 +86,9 @@ class SettingsStore(private val context: Context) {
         val selectedPackages = stringSetPreferencesKey("selected_packages")
         val filterMode = stringPreferencesKey("filter_mode")
         val isPro = booleanPreferencesKey("is_pro")
+        val appEnabled = booleanPreferencesKey("app_enabled")
         val quickOverlayAlpha = intPreferencesKey("quick_overlay_alpha")
+        val quickFilterStyle = stringPreferencesKey("quick_filter_style")
         val pausedUntil = longPreferencesKey("paused_until")
         val pauseCountDate = longPreferencesKey("pause_count_date")
         val pauseCount = intPreferencesKey("pause_count")
@@ -98,11 +107,13 @@ class SettingsStore(private val context: Context) {
             selectedPackages = prefs[Keys.selectedPackages].orEmpty(),
             filterMode = prefs[Keys.filterMode].toFilterMode(),
             isPro = prefs[Keys.isPro] ?: false,
+            isAppEnabled = prefs[Keys.appEnabled] ?: true,
             quickOverlayAlpha = (prefs[Keys.quickOverlayAlpha] ?: BlackWhiteSettings.DEFAULT_QUICK_OVERLAY_ALPHA)
                 .coerceIn(
                     BlackWhiteSettings.MIN_QUICK_OVERLAY_ALPHA,
                     BlackWhiteSettings.MAX_QUICK_OVERLAY_ALPHA
                 ),
+            quickFilterStyle = prefs[Keys.quickFilterStyle].toQuickFilterStyle(),
             pausedUntilMillis = prefs[Keys.pausedUntil] ?: 0L,
             pauseCountDateEpochDay = prefs[Keys.pauseCountDate] ?: 0L,
             pauseCountToday = prefs[Keys.pauseCount] ?: 0,
@@ -127,12 +138,20 @@ class SettingsStore(private val context: Context) {
         context.dataStore.edit { it[Keys.isPro] = enabled }
     }
 
+    suspend fun setAppEnabled(enabled: Boolean) {
+        context.dataStore.edit { it[Keys.appEnabled] = enabled }
+    }
+
     suspend fun setQuickOverlayAlpha(alpha: Int) {
         val safeAlpha = alpha.coerceIn(
             BlackWhiteSettings.MIN_QUICK_OVERLAY_ALPHA,
             BlackWhiteSettings.MAX_QUICK_OVERLAY_ALPHA
         )
         context.dataStore.edit { it[Keys.quickOverlayAlpha] = safeAlpha }
+    }
+
+    suspend fun setQuickFilterStyle(style: QuickFilterStyle) {
+        context.dataStore.edit { it[Keys.quickFilterStyle] = style.name }
     }
 
     suspend fun setScheduleEnabled(enabled: Boolean) {
@@ -215,6 +234,11 @@ class SettingsStore(private val context: Context) {
     private fun String?.toFilterMode(): FilterMode {
         return runCatching { FilterMode.valueOf(this ?: FilterMode.Quick.name) }
             .getOrDefault(FilterMode.Quick)
+    }
+
+    private fun String?.toQuickFilterStyle(): QuickFilterStyle {
+        return runCatching { QuickFilterStyle.valueOf(this ?: QuickFilterStyle.Light.name) }
+            .getOrDefault(QuickFilterStyle.Light)
     }
 
     companion object {

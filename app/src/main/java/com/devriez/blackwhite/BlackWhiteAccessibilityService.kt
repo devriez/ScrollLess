@@ -84,6 +84,7 @@ class BlackWhiteAccessibilityService : AccessibilityService() {
     private fun updateFilterForCurrentPackage() {
         val foregroundPackageName = selectedForegroundPackageName(allowStickyFallback = true)
         val shouldEnable = foregroundPackageName != null &&
+            currentSettings.isAppEnabled &&
             !currentSettings.isPaused() &&
             currentSettings.isWithinSchedule(LocalTime.now().hour)
         writeDebugStatus(
@@ -117,7 +118,8 @@ class BlackWhiteAccessibilityService : AccessibilityService() {
         pendingClearJob = scope.launch {
             delay(FILTER_CLEAR_DELAY_MS)
             val selectedForegroundPackage = selectedActiveWindowPackageName()
-            val shouldStillClear = currentSettings.isPaused() ||
+            val shouldStillClear = !currentSettings.isAppEnabled ||
+                currentSettings.isPaused() ||
                 !currentSettings.isWithinSchedule(LocalTime.now().hour) ||
                 selectedForegroundPackage == null
             writeDebugStatus(
@@ -232,7 +234,10 @@ class BlackWhiteAccessibilityService : AccessibilityService() {
     }
 
     private fun quickOverlayColor(): Int {
-        return Color.argb(currentSettings.quickOverlayAlpha, 166, 166, 166)
+        return when (currentSettings.quickFilterStyle) {
+            QuickFilterStyle.Light -> Color.argb(currentSettings.quickOverlayAlpha, 166, 166, 166)
+            QuickFilterStyle.Dark -> Color.argb(currentSettings.quickOverlayAlpha, 24, 24, 24)
+        }
     }
 
     private fun hideQuickOverlay() {
