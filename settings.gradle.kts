@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "BlackAndWhite"
+rootProject.name = "ScrollLess"
 include(":app")

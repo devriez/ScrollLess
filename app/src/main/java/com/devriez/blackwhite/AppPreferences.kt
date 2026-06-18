@@ -10,6 +10,8 @@ import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import org.json.JSONObject
+import java.time.LocalDate
 
 private val Context.dataStore by preferencesDataStore(name = "blackwhite_settings")
 
@@ -22,11 +24,17 @@ data class BlackWhiteSettings(
     val selectedPackages: Set<String> = emptySet(),
     val filterMode: FilterMode = FilterMode.Quick,
     val isPro: Boolean = false,
-    val isQuickToggleEnabled: Boolean = true,
     val quickOverlayAlpha: Int = DEFAULT_QUICK_OVERLAY_ALPHA,
     val pausedUntilMillis: Long = 0L,
-    val activeProfileName: String = "Default",
+    val pauseCountDateEpochDay: Long = 0L,
+    val pauseCountToday: Int = 0,
     val scheduleEnabled: Boolean = false,
+    val scheduleStartHour: Int = DEFAULT_SCHEDULE_START_HOUR,
+    val scheduleEndHour: Int = DEFAULT_SCHEDULE_END_HOUR,
+    val usageDateEpochDay: Long = LocalDate.now().toEpochDay(),
+    val usageToday: Map<String, Long> = emptyMap(),
+    val usageYesterday: Map<String, Long> = emptyMap(),
+    val baselineUsage: Map<String, Long> = emptyMap(),
     val debugStatus: String = ""
 ) {
     fun canSelectMore(packageName: String): Boolean {
@@ -37,11 +45,32 @@ data class BlackWhiteSettings(
         return pausedUntilMillis > nowMillis
     }
 
+    fun pausesLeftToday(todayEpochDay: Long = LocalDate.now().toEpochDay()): Int {
+        val usedToday = if (pauseCountDateEpochDay == todayEpochDay) pauseCountToday else 0
+        return (MAX_DAILY_PAUSES - usedToday).coerceAtLeast(0)
+    }
+
+    fun canPauseToday(todayEpochDay: Long = LocalDate.now().toEpochDay()): Boolean {
+        return pausesLeftToday(todayEpochDay) > 0
+    }
+
+    fun isWithinSchedule(hour: Int): Boolean {
+        if (!isPro || !scheduleEnabled) return true
+        return if (scheduleStartHour <= scheduleEndHour) {
+            hour in scheduleStartHour until scheduleEndHour
+        } else {
+            hour >= scheduleStartHour || hour < scheduleEndHour
+        }
+    }
+
     companion object {
         const val FREE_APP_LIMIT = 2
-        const val MIN_QUICK_OVERLAY_ALPHA = 80
-        const val MAX_QUICK_OVERLAY_ALPHA = 235
-        const val DEFAULT_QUICK_OVERLAY_ALPHA = 205
+        const val MIN_QUICK_OVERLAY_ALPHA = 204
+        const val MAX_QUICK_OVERLAY_ALPHA = 255
+        const val DEFAULT_QUICK_OVERLAY_ALPHA = 230
+        const val DEFAULT_SCHEDULE_START_HOUR = 9
+        const val DEFAULT_SCHEDULE_END_HOUR = 22
+        const val MAX_DAILY_PAUSES = 2
     }
 }
 
@@ -50,11 +79,17 @@ class SettingsStore(private val context: Context) {
         val selectedPackages = stringSetPreferencesKey("selected_packages")
         val filterMode = stringPreferencesKey("filter_mode")
         val isPro = booleanPreferencesKey("is_pro")
-        val quickToggle = booleanPreferencesKey("quick_toggle")
         val quickOverlayAlpha = intPreferencesKey("quick_overlay_alpha")
         val pausedUntil = longPreferencesKey("paused_until")
-        val activeProfile = stringPreferencesKey("active_profile")
+        val pauseCountDate = longPreferencesKey("pause_count_date")
+        val pauseCount = intPreferencesKey("pause_count")
         val scheduleEnabled = booleanPreferencesKey("schedule_enabled")
+        val scheduleStartHour = intPreferencesKey("schedule_start_hour")
+        val scheduleEndHour = intPreferencesKey("schedule_end_hour")
+        val usageDate = longPreferencesKey("usage_date")
+        val usageToday = stringPreferencesKey("usage_today")
+        val usageYesterday = stringPreferencesKey("usage_yesterday")
+        val baselineUsage = stringPreferencesKey("baseline_usage")
         val debugStatus = stringPreferencesKey("debug_status")
     }
 
@@ -63,15 +98,23 @@ class SettingsStore(private val context: Context) {
             selectedPackages = prefs[Keys.selectedPackages].orEmpty(),
             filterMode = prefs[Keys.filterMode].toFilterMode(),
             isPro = prefs[Keys.isPro] ?: false,
-            isQuickToggleEnabled = prefs[Keys.quickToggle] ?: true,
             quickOverlayAlpha = (prefs[Keys.quickOverlayAlpha] ?: BlackWhiteSettings.DEFAULT_QUICK_OVERLAY_ALPHA)
                 .coerceIn(
                     BlackWhiteSettings.MIN_QUICK_OVERLAY_ALPHA,
                     BlackWhiteSettings.MAX_QUICK_OVERLAY_ALPHA
                 ),
             pausedUntilMillis = prefs[Keys.pausedUntil] ?: 0L,
-            activeProfileName = prefs[Keys.activeProfile] ?: "Default",
+            pauseCountDateEpochDay = prefs[Keys.pauseCountDate] ?: 0L,
+            pauseCountToday = prefs[Keys.pauseCount] ?: 0,
             scheduleEnabled = prefs[Keys.scheduleEnabled] ?: false,
+            scheduleStartHour = (prefs[Keys.scheduleStartHour] ?: BlackWhiteSettings.DEFAULT_SCHEDULE_START_HOUR)
+                .coerceIn(0, 23),
+            scheduleEndHour = (prefs[Keys.scheduleEndHour] ?: BlackWhiteSettings.DEFAULT_SCHEDULE_END_HOUR)
+                .coerceIn(0, 23),
+            usageDateEpochDay = prefs[Keys.usageDate] ?: LocalDate.now().toEpochDay(),
+            usageToday = decodeUsageMap(prefs[Keys.usageToday].orEmpty()),
+            usageYesterday = decodeUsageMap(prefs[Keys.usageYesterday].orEmpty()),
+            baselineUsage = decodeUsageMap(prefs[Keys.baselineUsage].orEmpty()),
             debugStatus = prefs[Keys.debugStatus].orEmpty()
         )
     }
@@ -82,10 +125,6 @@ class SettingsStore(private val context: Context) {
 
     suspend fun setPro(enabled: Boolean) {
         context.dataStore.edit { it[Keys.isPro] = enabled }
-    }
-
-    suspend fun setQuickToggle(enabled: Boolean) {
-        context.dataStore.edit { it[Keys.quickToggle] = enabled }
     }
 
     suspend fun setQuickOverlayAlpha(alpha: Int) {
@@ -100,9 +139,33 @@ class SettingsStore(private val context: Context) {
         context.dataStore.edit { it[Keys.scheduleEnabled] = enabled }
     }
 
+    suspend fun setScheduleStartHour(hour: Int) {
+        context.dataStore.edit { it[Keys.scheduleStartHour] = hour.coerceIn(0, 23) }
+    }
+
+    suspend fun setScheduleEndHour(hour: Int) {
+        context.dataStore.edit { it[Keys.scheduleEndHour] = hour.coerceIn(0, 23) }
+    }
+
     suspend fun pauseFor(minutes: Long) {
-        val until = if (minutes <= 0L) 0L else System.currentTimeMillis() + minutes * 60_000L
-        context.dataStore.edit { it[Keys.pausedUntil] = until }
+        if (minutes <= 0L) {
+            clearPause()
+            return
+        }
+        val today = LocalDate.now().toEpochDay()
+        context.dataStore.edit { prefs ->
+            val storedDate = prefs[Keys.pauseCountDate] ?: 0L
+            val usedToday = if (storedDate == today) prefs[Keys.pauseCount] ?: 0 else 0
+            if (usedToday >= BlackWhiteSettings.MAX_DAILY_PAUSES) return@edit
+
+            prefs[Keys.pauseCountDate] = today
+            prefs[Keys.pauseCount] = usedToday + 1
+            prefs[Keys.pausedUntil] = System.currentTimeMillis() + minutes * 60_000L
+        }
+    }
+
+    suspend fun clearPause() {
+        context.dataStore.edit { it[Keys.pausedUntil] = 0L }
     }
 
     suspend fun togglePackage(packageName: String, checked: Boolean, current: BlackWhiteSettings) {
@@ -120,8 +183,57 @@ class SettingsStore(private val context: Context) {
         context.dataStore.edit { it[Keys.debugStatus] = status.take(800) }
     }
 
+    suspend fun addUsage(packageName: String, durationMillis: Long) {
+        if (durationMillis < MIN_USAGE_SAMPLE_MS) return
+        val today = LocalDate.now().toEpochDay()
+        context.dataStore.edit { prefs ->
+            val storedDate = prefs[Keys.usageDate] ?: today
+            val todayUsage = decodeUsageMap(prefs[Keys.usageToday].orEmpty()).toMutableMap()
+
+            if (storedDate != today) {
+                prefs[Keys.usageDate] = today
+                prefs[Keys.usageYesterday] = encodeUsageMap(todayUsage)
+                prefs[Keys.usageToday] = encodeUsageMap(mapOf(packageName to durationMillis))
+            } else {
+                todayUsage[packageName] = (todayUsage[packageName] ?: 0L) + durationMillis
+                prefs[Keys.usageDate] = today
+                prefs[Keys.usageToday] = encodeUsageMap(todayUsage)
+            }
+        }
+    }
+
+    suspend fun captureBaselineIfEmpty(usage: Map<String, Long>) {
+        if (usage.isEmpty()) return
+        context.dataStore.edit { prefs ->
+            val current = prefs[Keys.baselineUsage].orEmpty()
+            if (current.isBlank() || decodeUsageMap(current).isEmpty()) {
+                prefs[Keys.baselineUsage] = encodeUsageMap(usage)
+            }
+        }
+    }
+
     private fun String?.toFilterMode(): FilterMode {
         return runCatching { FilterMode.valueOf(this ?: FilterMode.Quick.name) }
             .getOrDefault(FilterMode.Quick)
     }
+
+    companion object {
+        private const val MIN_USAGE_SAMPLE_MS = 1_000L
+    }
+}
+
+private fun decodeUsageMap(raw: String): Map<String, Long> {
+    if (raw.isBlank()) return emptyMap()
+    return runCatching {
+        val json = JSONObject(raw)
+        json.keys().asSequence().associateWith { key -> json.optLong(key, 0L) }
+    }.getOrDefault(emptyMap())
+}
+
+private fun encodeUsageMap(values: Map<String, Long>): String {
+    val json = JSONObject()
+    values.forEach { (key, value) ->
+        if (value > 0L) json.put(key, value)
+    }
+    return json.toString()
 }
