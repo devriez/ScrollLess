@@ -18,6 +18,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import java.time.LocalDate
 import java.time.LocalTime
 
 class BlackWhiteAccessibilityService : AccessibilityService() {
@@ -84,8 +85,9 @@ class BlackWhiteAccessibilityService : AccessibilityService() {
     private fun updateFilterForCurrentPackage() {
         val foregroundPackageName = selectedForegroundPackageName(allowStickyFallback = true)
         val shouldEnable = foregroundPackageName != null &&
+            currentSettings.isAppEnabled &&
             !currentSettings.isPaused() &&
-            currentSettings.isWithinSchedule(LocalTime.now().hour)
+            currentSettings.isWithinSchedule(LocalTime.now().hour, LocalDate.now().dayOfWeek.value)
         writeDebugStatus(
             decision = if (shouldEnable) "enable/keep" else "schedule clear",
             foregroundPackageName = foregroundPackageName
@@ -117,8 +119,9 @@ class BlackWhiteAccessibilityService : AccessibilityService() {
         pendingClearJob = scope.launch {
             delay(FILTER_CLEAR_DELAY_MS)
             val selectedForegroundPackage = selectedActiveWindowPackageName()
-            val shouldStillClear = currentSettings.isPaused() ||
-                !currentSettings.isWithinSchedule(LocalTime.now().hour) ||
+            val shouldStillClear = !currentSettings.isAppEnabled ||
+                currentSettings.isPaused() ||
+                !currentSettings.isWithinSchedule(LocalTime.now().hour, LocalDate.now().dayOfWeek.value) ||
                 selectedForegroundPackage == null
             writeDebugStatus(
                 decision = if (shouldStillClear) "clear" else "keep after delay",
@@ -232,7 +235,10 @@ class BlackWhiteAccessibilityService : AccessibilityService() {
     }
 
     private fun quickOverlayColor(): Int {
-        return Color.argb(currentSettings.quickOverlayAlpha, 166, 166, 166)
+        return when (currentSettings.quickFilterStyle) {
+            QuickFilterStyle.Light -> Color.argb(220, 166, 166, 166)
+            QuickFilterStyle.Dark -> Color.argb(235, 24, 24, 24)
+        }
     }
 
     private fun hideQuickOverlay() {
