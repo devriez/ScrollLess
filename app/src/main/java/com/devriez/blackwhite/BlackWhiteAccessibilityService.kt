@@ -33,6 +33,8 @@ class BlackWhiteAccessibilityService : AccessibilityService() {
     private var overlayView: View? = null
     private var fullModeApplied = false
     private var pendingClearJob: Job? = null
+    private var protectionStartedAtMillis: Long = 0L
+    private var protectionFlushJob: Job? = null
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -58,7 +60,9 @@ class BlackWhiteAccessibilityService : AccessibilityService() {
 
     override fun onDestroy() {
         recordUsageUntilNow()
+        recordProtectionUntilNow()
         pendingClearJob?.cancel()
+        protectionFlushJob?.cancel()
         clearFilters()
         scope.cancel()
         super.onDestroy()
@@ -82,6 +86,44 @@ class BlackWhiteAccessibilityService : AccessibilityService() {
         }
     }
 
+    private fun startProtectionTimer() {
+        if (protectionStartedAtMillis <= 0L) {
+            protectionStartedAtMillis = System.currentTimeMillis()
+        }
+        if (protectionFlushJob?.isActive == true) return
+        protectionFlushJob = scope.launch {
+            while (true) {
+                delay(PROTECTION_FLUSH_INTERVAL_MS)
+                flushProtectionProgress()
+            }
+        }
+    }
+
+    private fun recordProtectionUntilNow() {
+        protectionFlushJob?.cancel()
+        protectionFlushJob = null
+        val startedAt = protectionStartedAtMillis
+        if (startedAt <= 0L) return
+        protectionStartedAtMillis = 0L
+        val duration = System.currentTimeMillis() - startedAt
+        if (duration < 1_000L) return
+        scope.launch(Dispatchers.IO) {
+            settingsStore.addProtectionTime(duration)
+        }
+    }
+
+    private fun flushProtectionProgress() {
+        val startedAt = protectionStartedAtMillis
+        if (startedAt <= 0L) return
+        val now = System.currentTimeMillis()
+        val duration = now - startedAt
+        if (duration < 1_000L) return
+        protectionStartedAtMillis = now
+        scope.launch(Dispatchers.IO) {
+            settingsStore.addProtectionTime(duration)
+        }
+    }
+
     private fun updateFilterForCurrentPackage() {
         val foregroundPackageName = selectedForegroundPackageName(allowStickyFallback = true)
         val shouldEnable = foregroundPackageName != null &&
@@ -94,10 +136,12 @@ class BlackWhiteAccessibilityService : AccessibilityService() {
         )
 
         if (!shouldEnable) {
+            recordProtectionUntilNow()
             scheduleFilterClear()
             return
         }
 
+        startProtectionTimer()
         lastSelectedPackageName = foregroundPackageName
         lastSelectedAtMillis = System.currentTimeMillis()
         pendingClearJob?.cancel()
@@ -129,9 +173,11 @@ class BlackWhiteAccessibilityService : AccessibilityService() {
             )
 
             if (shouldStillClear) {
+                recordProtectionUntilNow()
                 lastSelectedPackageName = null
                 clearFilters()
             } else {
+                startProtectionTimer()
                 lastSelectedPackageName = selectedForegroundPackage
             }
         }
@@ -237,7 +283,7 @@ class BlackWhiteAccessibilityService : AccessibilityService() {
     private fun quickOverlayColor(): Int {
         return when (currentSettings.quickFilterStyle) {
             QuickFilterStyle.Light -> Color.argb(220, 166, 166, 166)
-            QuickFilterStyle.Dark -> Color.argb(235, 24, 24, 24)
+            QuickFilterStyle.Dark -> Color.argb(205, 24, 24, 24)
         }
     }
 
@@ -281,6 +327,7 @@ class BlackWhiteAccessibilityService : AccessibilityService() {
         private const val SETTING_DALTONIZER = "accessibility_display_daltonizer"
         private const val DALTONIZER_MONOCHROMACY = 0
         private const val FILTER_CLEAR_DELAY_MS = 100L
+        private const val PROTECTION_FLUSH_INTERVAL_MS = 5_000L
         private const val STICKY_FALLBACK_MS = 5_000L
     }
 }
