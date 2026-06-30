@@ -30,6 +30,11 @@ data class DaySchedule(
     val endHour: Int = BlackWhiteSettings.DEFAULT_SCHEDULE_END_HOUR
 )
 
+data class DailyBreakStats(
+    val pauseCount: Int = 0,
+    val allowedAppCount: Int = 0
+)
+
 data class BlackWhiteSettings(
     val selectedPackages: Set<String> = emptySet(),
     val filterMode: FilterMode = FilterMode.Quick,
@@ -43,6 +48,12 @@ data class BlackWhiteSettings(
     val pauseCountDateEpochDay: Long = 0L,
     val pauseCountToday: Int = 0,
     val pauseTimeTodayMillis: Long = 0L,
+    val allowedPackageName: String = "",
+    val allowedUntilMillis: Long = 0L,
+    val allowedAppDateEpochDay: Long = 0L,
+    val allowedAppCountToday: Int = 0,
+    val activeSelectedPackageName: String = "",
+    val breakHistory: Map<Long, DailyBreakStats> = emptyMap(),
     val scheduleEnabled: Boolean = false,
     val scheduleStartHour: Int = DEFAULT_SCHEDULE_START_HOUR,
     val scheduleEndHour: Int = DEFAULT_SCHEDULE_END_HOUR,
@@ -69,6 +80,24 @@ data class BlackWhiteSettings(
         return pausedUntilMillis > nowMillis
     }
 
+    fun isPackageAllowed(packageName: String?, nowMillis: Long = System.currentTimeMillis()): Boolean {
+        return packageName != null &&
+            packageName == allowedPackageName &&
+            allowedUntilMillis > nowMillis
+    }
+
+    fun canAllowOneAppToday(): Boolean {
+        return allowedAppCountToday < DAILY_ALLOWED_APP_LIMIT
+    }
+
+    fun canPauseToday(): Boolean {
+        return pauseCountToday < DAILY_PAUSE_LIMIT
+    }
+
+    fun remainingPausesToday(): Int {
+        return (DAILY_PAUSE_LIMIT - pauseCountToday).coerceAtLeast(0)
+    }
+
     fun isWithinSchedule(hour: Int, dayOfWeek: Int = LocalDate.now().dayOfWeek.value): Boolean {
         if (!isPro || !scheduleEnabled) return true
         if (scheduleOverrideDateEpochDay == LocalDate.now().toEpochDay()) return true
@@ -88,6 +117,9 @@ data class BlackWhiteSettings(
         const val DEFAULT_SCHEDULE_START_HOUR = 9
         const val DEFAULT_SCHEDULE_END_HOUR = 22
         const val CURRENT_BASELINE_VERSION = 2
+        const val DAILY_PAUSE_LIMIT = 3
+        const val DAILY_ALLOWED_APP_LIMIT = 1
+        const val ONE_APP_ALLOW_MINUTES = 60L
 
         fun defaultDaySchedules(): Map<Int, DaySchedule> {
             return (1..7).associateWith { DaySchedule() }
@@ -109,6 +141,12 @@ class SettingsStore(private val context: Context) {
         val pauseCountDate = longPreferencesKey("pause_count_date")
         val pauseCount = intPreferencesKey("pause_count")
         val pauseTimeToday = longPreferencesKey("pause_time_today")
+        val allowedPackage = stringPreferencesKey("allowed_package")
+        val allowedUntil = longPreferencesKey("allowed_until")
+        val allowedAppDate = longPreferencesKey("allowed_app_date")
+        val allowedAppCount = intPreferencesKey("allowed_app_count")
+        val activeSelectedPackage = stringPreferencesKey("active_selected_package")
+        val breakHistory = stringPreferencesKey("break_history")
         val scheduleEnabled = booleanPreferencesKey("schedule_enabled")
         val scheduleStartHour = intPreferencesKey("schedule_start_hour")
         val scheduleEndHour = intPreferencesKey("schedule_end_hour")
@@ -134,6 +172,7 @@ class SettingsStore(private val context: Context) {
         val disabledDate = prefs[Keys.appDisabledDate] ?: 0L
         val autoEnabledForNewDay = !storedAppEnabled && disabledDate > 0L && disabledDate < today
         val pauseCountDate = prefs[Keys.pauseCountDate] ?: 0L
+        val allowedAppDate = prefs[Keys.allowedAppDate] ?: 0L
         val protectionDate = prefs[Keys.protectionDate] ?: today
         val scheduleStartHour = (prefs[Keys.scheduleStartHour] ?: BlackWhiteSettings.DEFAULT_SCHEDULE_START_HOUR)
             .coerceIn(0, 23)
@@ -156,6 +195,12 @@ class SettingsStore(private val context: Context) {
             pauseCountDateEpochDay = pauseCountDate,
             pauseCountToday = if (pauseCountDate == today) prefs[Keys.pauseCount] ?: 0 else 0,
             pauseTimeTodayMillis = if (pauseCountDate == today) prefs[Keys.pauseTimeToday] ?: 0L else 0L,
+            allowedPackageName = prefs[Keys.allowedPackage].orEmpty(),
+            allowedUntilMillis = prefs[Keys.allowedUntil] ?: 0L,
+            allowedAppDateEpochDay = allowedAppDate,
+            allowedAppCountToday = if (allowedAppDate == today) prefs[Keys.allowedAppCount] ?: 0 else 0,
+            activeSelectedPackageName = prefs[Keys.activeSelectedPackage].orEmpty(),
+            breakHistory = decodeBreakHistory(prefs[Keys.breakHistory].orEmpty()),
             scheduleEnabled = prefs[Keys.scheduleEnabled] ?: false,
             scheduleStartHour = scheduleStartHour,
             scheduleEndHour = scheduleEndHour,
@@ -204,6 +249,12 @@ class SettingsStore(private val context: Context) {
                 prefs[Keys.pauseCountDate] = today
                 prefs[Keys.pauseCount] = 0
                 prefs[Keys.pauseTimeToday] = 0L
+                prefs[Keys.allowedPackage] = ""
+                prefs[Keys.allowedUntil] = 0L
+                prefs[Keys.allowedAppDate] = today
+                prefs[Keys.allowedAppCount] = 0
+                prefs[Keys.activeSelectedPackage] = ""
+                prefs[Keys.breakHistory] = ""
                 prefs[Keys.scheduleEnabled] = false
                 prefs[Keys.usageDate] = today
                 prefs[Keys.usageToday] = ""
@@ -225,7 +276,10 @@ class SettingsStore(private val context: Context) {
         context.dataStore.edit {
             it[Keys.appEnabled] = enabled
             it[Keys.appDisabledDate] = if (enabled) 0L else LocalDate.now().toEpochDay()
-            if (!enabled) it[Keys.scheduleOverrideDate] = 0L
+            it[Keys.pausedUntil] = 0L
+            it[Keys.allowedPackage] = ""
+            it[Keys.allowedUntil] = 0L
+            it[Keys.scheduleOverrideDate] = 0L
         }
     }
 
@@ -234,6 +288,9 @@ class SettingsStore(private val context: Context) {
             it[Keys.appEnabled] = true
             it[Keys.appDisabledDate] = 0L
             it[Keys.scheduleOverrideDate] = LocalDate.now().toEpochDay()
+            it[Keys.pausedUntil] = 0L
+            it[Keys.allowedPackage] = ""
+            it[Keys.allowedUntil] = 0L
         }
     }
 
@@ -315,16 +372,70 @@ class SettingsStore(private val context: Context) {
             val pauseMillis = minutes * 60_000L
             val pauseCountDate = prefs[Keys.pauseCountDate] ?: 0L
             val count = if (pauseCountDate == today) prefs[Keys.pauseCount] ?: 0 else 0
+            if (count >= BlackWhiteSettings.DAILY_PAUSE_LIMIT) return@edit
             val pauseTime = if (pauseCountDate == today) prefs[Keys.pauseTimeToday] ?: 0L else 0L
             prefs[Keys.pausedUntil] = System.currentTimeMillis() + pauseMillis
             prefs[Keys.pauseCountDate] = today
             prefs[Keys.pauseCount] = count + 1
             prefs[Keys.pauseTimeToday] = pauseTime + pauseMillis
+            prefs[Keys.breakHistory] = encodeBreakHistory(
+                decodeBreakHistory(prefs[Keys.breakHistory].orEmpty())
+                    .incrementPause(today)
+            )
         }
     }
 
     suspend fun clearPause() {
         context.dataStore.edit { it[Keys.pausedUntil] = 0L }
+    }
+
+    suspend fun allowOneApp(packageName: String, minutes: Long = BlackWhiteSettings.ONE_APP_ALLOW_MINUTES) {
+        if (packageName.isBlank() || minutes <= 0L) return
+        val today = LocalDate.now().toEpochDay()
+        context.dataStore.edit { prefs ->
+            val allowedDate = prefs[Keys.allowedAppDate] ?: 0L
+            val count = if (allowedDate == today) prefs[Keys.allowedAppCount] ?: 0 else 0
+            if (count >= BlackWhiteSettings.DAILY_ALLOWED_APP_LIMIT) return@edit
+            prefs[Keys.allowedPackage] = packageName
+            prefs[Keys.allowedUntil] = System.currentTimeMillis() + minutes * 60_000L
+            prefs[Keys.allowedAppDate] = today
+            prefs[Keys.allowedAppCount] = count + 1
+            prefs[Keys.breakHistory] = encodeBreakHistory(
+                decodeBreakHistory(prefs[Keys.breakHistory].orEmpty())
+                    .incrementAllowedApp(today)
+            )
+        }
+    }
+
+    suspend fun clearAllowedApp() {
+        context.dataStore.edit {
+            it[Keys.allowedPackage] = ""
+            it[Keys.allowedUntil] = 0L
+        }
+    }
+
+    suspend fun resetBreakCounters() {
+        val today = LocalDate.now().toEpochDay()
+        context.dataStore.edit {
+            it[Keys.pausedUntil] = 0L
+            it[Keys.pauseCountDate] = today
+            it[Keys.pauseCount] = 0
+            it[Keys.pauseTimeToday] = 0L
+            it[Keys.allowedPackage] = ""
+            it[Keys.allowedUntil] = 0L
+            it[Keys.allowedAppDate] = today
+            it[Keys.allowedAppCount] = 0
+            it[Keys.breakHistory] = ""
+        }
+    }
+
+    suspend fun setActiveSelectedPackage(packageName: String?) {
+        context.dataStore.edit { prefs ->
+            val next = packageName.orEmpty()
+            if (prefs[Keys.activeSelectedPackage].orEmpty() != next) {
+                prefs[Keys.activeSelectedPackage] = next
+            }
+        }
     }
 
     suspend fun togglePackage(packageName: String, checked: Boolean, current: BlackWhiteSettings) {
@@ -392,21 +503,25 @@ class SettingsStore(private val context: Context) {
                 prefs[Keys.baselineUsage] = ""
                 prefs[Keys.baselineDailyUsage] = ""
             }
-            val current = if (version < BlackWhiteSettings.CURRENT_BASELINE_VERSION) {
+            val currentUsage = if (version < BlackWhiteSettings.CURRENT_BASELINE_VERSION) {
                 ""
             } else {
                 prefs[Keys.baselineUsage].orEmpty()
             }
-            val currentDaily = if (version < BlackWhiteSettings.CURRENT_BASELINE_VERSION) {
+            val currentDailyText = if (version < BlackWhiteSettings.CURRENT_BASELINE_VERSION) {
                 ""
             } else {
                 prefs[Keys.baselineDailyUsage].orEmpty()
             }
-            if (usage.isNotEmpty() && (current.isBlank() || decodeUsageMap(current).isEmpty())) {
-                prefs[Keys.baselineUsage] = encodeUsageMap(usage)
-            }
-            if (dailyUsage.isNotEmpty() && (currentDaily.isBlank() || decodeDailyUsageMap(currentDaily).isEmpty())) {
+            val currentDaily = decodeDailyUsageMap(currentDailyText)
+            val shouldReplaceDaily = dailyUsage.isNotEmpty() && (
+                currentDaily.isEmpty() || dailyUsage.size > currentDaily.size
+            )
+            if (shouldReplaceDaily) {
                 prefs[Keys.baselineDailyUsage] = encodeDailyUsageMap(dailyUsage)
+                prefs[Keys.baselineUsage] = encodeUsageMap(dailyUsage.totalUsageByPackage())
+            } else if (usage.isNotEmpty() && (currentUsage.isBlank() || decodeUsageMap(currentUsage).isEmpty())) {
+                prefs[Keys.baselineUsage] = encodeUsageMap(usage)
             }
             prefs[Keys.baselineVersion] = BlackWhiteSettings.CURRENT_BASELINE_VERSION
         }
@@ -470,6 +585,57 @@ private fun encodeDailyUsageMap(values: Map<Long, Map<String, Long>>): String {
         if (appsJson.length() > 0) json.put(day.toString(), appsJson)
     }
     return json.toString()
+}
+
+private fun decodeBreakHistory(raw: String): Map<Long, DailyBreakStats> {
+    if (raw.isBlank()) return emptyMap()
+    return runCatching {
+        val json = JSONObject(raw)
+        json.keys().asSequence().associate { dayKey ->
+            val dayJson = json.optJSONObject(dayKey) ?: JSONObject()
+            dayKey.toLong() to DailyBreakStats(
+                pauseCount = dayJson.optInt("pause", 0),
+                allowedAppCount = dayJson.optInt("allow", 0)
+            )
+        }.filterValues { it.pauseCount > 0 || it.allowedAppCount > 0 }
+    }.getOrDefault(emptyMap())
+}
+
+private fun encodeBreakHistory(values: Map<Long, DailyBreakStats>): String {
+    val json = JSONObject()
+    values.forEach { (day, stats) ->
+        if (stats.pauseCount > 0 || stats.allowedAppCount > 0) {
+            json.put(
+                day.toString(),
+                JSONObject()
+                    .put("pause", stats.pauseCount)
+                    .put("allow", stats.allowedAppCount)
+            )
+        }
+    }
+    return json.toString()
+}
+
+private fun Map<Long, DailyBreakStats>.incrementPause(day: Long): Map<Long, DailyBreakStats> {
+    val next = toMutableMap()
+    val current = next[day] ?: DailyBreakStats()
+    next[day] = current.copy(pauseCount = current.pauseCount + 1)
+    return next.filterKeys { it >= day - 30L }
+}
+
+private fun Map<Long, DailyBreakStats>.incrementAllowedApp(day: Long): Map<Long, DailyBreakStats> {
+    val next = toMutableMap()
+    val current = next[day] ?: DailyBreakStats()
+    next[day] = current.copy(allowedAppCount = current.allowedAppCount + 1)
+    return next.filterKeys { it >= day - 30L }
+}
+
+private fun Map<Long, Map<String, Long>>.totalUsageByPackage(): Map<String, Long> {
+    return values
+        .flatMap { it.entries }
+        .groupBy { it.key }
+        .mapValues { entry -> entry.value.sumOf { it.value } }
+        .filterValues { it > 0L }
 }
 
 private fun decodeDaySchedules(raw: String, fallbackStartHour: Int, fallbackEndHour: Int): Map<Int, DaySchedule> {

@@ -35,6 +35,8 @@ class BlackWhiteAccessibilityService : AccessibilityService() {
     private var pendingClearJob: Job? = null
     private var protectionStartedAtMillis: Long = 0L
     private var protectionFlushJob: Job? = null
+    private var allowedRefreshJob: Job? = null
+    private var lastPublishedActivePackageName: String? = null
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -63,6 +65,7 @@ class BlackWhiteAccessibilityService : AccessibilityService() {
         recordProtectionUntilNow()
         pendingClearJob?.cancel()
         protectionFlushJob?.cancel()
+        allowedRefreshJob?.cancel()
         clearFilters()
         scope.cancel()
         super.onDestroy()
@@ -126,9 +129,12 @@ class BlackWhiteAccessibilityService : AccessibilityService() {
 
     private fun updateFilterForCurrentPackage() {
         val foregroundPackageName = selectedForegroundPackageName(allowStickyFallback = true)
+        updateActiveSelectedPackage(foregroundPackageName)
+        scheduleAllowedRefreshIfNeeded(foregroundPackageName)
         val shouldEnable = foregroundPackageName != null &&
             currentSettings.isAppEnabled &&
             !currentSettings.isPaused() &&
+            !currentSettings.isPackageAllowed(foregroundPackageName) &&
             currentSettings.isWithinSchedule(LocalTime.now().hour, LocalDate.now().dayOfWeek.value)
         writeDebugStatus(
             decision = if (shouldEnable) "enable/keep" else "schedule clear",
@@ -165,6 +171,7 @@ class BlackWhiteAccessibilityService : AccessibilityService() {
             val selectedForegroundPackage = selectedActiveWindowPackageName()
             val shouldStillClear = !currentSettings.isAppEnabled ||
                 currentSettings.isPaused() ||
+                currentSettings.isPackageAllowed(selectedForegroundPackage) ||
                 !currentSettings.isWithinSchedule(LocalTime.now().hour, LocalDate.now().dayOfWeek.value) ||
                 selectedForegroundPackage == null
             writeDebugStatus(
@@ -180,6 +187,28 @@ class BlackWhiteAccessibilityService : AccessibilityService() {
                 startProtectionTimer()
                 lastSelectedPackageName = selectedForegroundPackage
             }
+        }
+    }
+
+    private fun updateActiveSelectedPackage(packageName: String?) {
+        if (packageName == lastPublishedActivePackageName) return
+        lastPublishedActivePackageName = packageName
+        scope.launch(Dispatchers.IO) {
+            settingsStore.setActiveSelectedPackage(packageName)
+        }
+    }
+
+    private fun scheduleAllowedRefreshIfNeeded(packageName: String?) {
+        if (!currentSettings.isPackageAllowed(packageName)) {
+            allowedRefreshJob?.cancel()
+            allowedRefreshJob = null
+            return
+        }
+        if (allowedRefreshJob?.isActive == true) return
+        val delayMillis = (currentSettings.allowedUntilMillis - System.currentTimeMillis()).coerceAtLeast(0L) + 250L
+        allowedRefreshJob = scope.launch {
+            delay(delayMillis)
+            updateFilterForCurrentPackage()
         }
     }
 
