@@ -118,6 +118,7 @@ data class BlackWhiteSettings(
         const val DEFAULT_SCHEDULE_END_HOUR = 22
         const val CURRENT_BASELINE_VERSION = 2
         const val DAILY_PAUSE_LIMIT = 3
+        const val DAILY_EMERGENCY_PAUSE_LIMIT = 4
         const val DAILY_ALLOWED_APP_LIMIT = 1
         const val ONE_APP_ALLOW_MINUTES = 60L
 
@@ -362,7 +363,7 @@ class SettingsStore(private val context: Context) {
         }
     }
 
-    suspend fun pauseFor(minutes: Long) {
+    suspend fun pauseFor(minutes: Long, maxDailyCount: Int = BlackWhiteSettings.DAILY_PAUSE_LIMIT) {
         if (minutes <= 0L) {
             clearPause()
             return
@@ -372,7 +373,7 @@ class SettingsStore(private val context: Context) {
             val pauseMillis = minutes * 60_000L
             val pauseCountDate = prefs[Keys.pauseCountDate] ?: 0L
             val count = if (pauseCountDate == today) prefs[Keys.pauseCount] ?: 0 else 0
-            if (count >= BlackWhiteSettings.DAILY_PAUSE_LIMIT) return@edit
+            if (count >= maxDailyCount) return@edit
             val pauseTime = if (pauseCountDate == today) prefs[Keys.pauseTimeToday] ?: 0L else 0L
             prefs[Keys.pausedUntil] = System.currentTimeMillis() + pauseMillis
             prefs[Keys.pauseCountDate] = today

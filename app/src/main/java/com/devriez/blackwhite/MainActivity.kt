@@ -29,6 +29,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -44,8 +45,10 @@ import androidx.compose.material.icons.filled.PowerOff
 import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -60,6 +63,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
@@ -81,11 +85,13 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.random.Random
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
@@ -152,7 +158,8 @@ private val SystemAppPackageDenylist = setOf(
 
 private enum class AppScreen(val title: String) {
     Home("ScrollLess"),
-    Pause("Пауза"),
+    Pause("Выключение"),
+    Progress("Прогресс"),
     Apps("Приложения"),
     Color("Цвет экрана"),
     Schedule("Расписание"),
@@ -171,7 +178,6 @@ fun BlackWhiteApp() {
     var systemUsage by remember { mutableStateOf(SystemUsageSnapshot()) }
     var nowMillis by remember { mutableLongStateOf(System.currentTimeMillis()) }
     var currentScreen by remember { mutableStateOf(AppScreen.Home) }
-    var progressExpanded by remember { mutableStateOf(false) }
     var candidateNotice by remember { mutableStateOf("") }
     var heroNotice by remember { mutableStateOf("") }
     var pendingSelectedPackage by remember { mutableStateOf<String?>(null) }
@@ -179,6 +185,9 @@ fun BlackWhiteApp() {
     val appLabels = remember(apps) { apps.associate { it.packageName to it.label } }
     val effectiveSettings = remember(settings) {
         if (settings.testStatsEnabled) settings.withTestStatsSelection() else settings
+    }
+    val effectiveBreakHistory = remember(settings.testStatsEnabled, settings.breakHistory) {
+        if (settings.testStatsEnabled) buildTestBreakHistory() else settings.breakHistory
     }
     val selectedApps = remember(apps, settings.selectedPackages) {
         apps.filter { it.packageName in settings.selectedPackages }
@@ -247,7 +256,11 @@ fun BlackWhiteApp() {
             TopAppBar(
                 title = {
                     val title = if (currentScreen == AppScreen.Apps) {
-                        "Приложения (${settings.selectedPackages.size}/${if (settings.isPro) "∞" else BlackWhiteSettings.FREE_APP_LIMIT})"
+                        if (settings.isPro) {
+                            "Приложения (${settings.selectedPackages.size})"
+                        } else {
+                            "Приложения (${settings.selectedPackages.size.coerceAtMost(BlackWhiteSettings.FREE_APP_LIMIT)}/${BlackWhiteSettings.FREE_APP_LIMIT})"
+                        }
                     } else {
                         currentScreen.title
                     }
@@ -310,22 +323,27 @@ fun BlackWhiteApp() {
                                     }
                                 }
                             },
-                            onDisable = {
-                                heroNotice = ""
-                                scope.launch {
-                                    store.clearPause()
-                                    store.clearAllowedApp()
-                                    store.setAppEnabled(false)
+                            onPause15 = {
+                                if (settings.selectedPackages.isEmpty()) {
+                                    heroNotice = "Сначала выбери хотя бы одно приложение в настройках."
+                                } else if (!settings.canPauseToday()) {
+                                    heroNotice = "Все паузы на 15 мин сегодня использованы."
+                                } else {
+                                    heroNotice = ""
+                                    scope.launch {
+                                        store.setAppEnabled(true)
+                                        store.pauseFor(15)
+                                    }
                                 }
                             },
-                            onPause = {
+                            onPause60 = {
                                 if (settings.selectedPackages.isEmpty()) {
                                     heroNotice = "Сначала выбери хотя бы одно приложение в настройках."
                                 } else {
                                     heroNotice = ""
                                     currentScreen = AppScreen.Pause
                                 }
-                            },
+                            }
                         )
                     }
 
@@ -357,6 +375,7 @@ fun BlackWhiteApp() {
                         }
                         UsageCard(
                             settings = effectiveSettings,
+                            breakHistory = effectiveBreakHistory,
                             appLabels = appLabels,
                             systemUsage = if (settings.testStatsEnabled) {
                                 buildTestUsageSnapshot()
@@ -373,9 +392,9 @@ fun BlackWhiteApp() {
                             },
                             usageStatsGranted = previewUsageStatsGranted,
                             firstLaunchPreview = settings.firstLaunchPreview,
-                            expanded = progressExpanded,
-                            onToggleExpanded = { progressExpanded = !progressExpanded },
+                            detailed = false,
                             candidateNotice = candidateNotice,
+                            onOpenDetails = { currentScreen = AppScreen.Progress },
                             onOpenPro = { currentScreen = AppScreen.Pro },
                             onCandidateChange = { packageName, checked ->
                                 if (!checked || settings.canSelectMore(packageName)) {
@@ -412,11 +431,58 @@ fun BlackWhiteApp() {
                             onFirstLaunchPreviewChange = { enabled ->
                                 heroNotice = ""
                                 candidateNotice = ""
-                                progressExpanded = false
                                 firstLaunchHistoryRequested = false
                                 scope.launch { store.setFirstLaunchPreview(enabled) }
                             },
                             onResetBreakCounters = { scope.launch { store.resetBreakCounters() } }
+                        )
+                    }
+                }
+
+                AppScreen.Progress -> {
+                    item {
+                        val previewUsageStatsGranted = if (settings.testStatsEnabled) {
+                            true
+                        } else if (settings.firstLaunchPreview) {
+                            permissionSnapshot.usageStatsGranted && firstLaunchHistoryRequested
+                        } else {
+                            permissionSnapshot.usageStatsGranted
+                        }
+                        UsageCard(
+                            settings = effectiveSettings,
+                            breakHistory = effectiveBreakHistory,
+                            appLabels = appLabels,
+                            systemUsage = if (settings.testStatsEnabled) {
+                                buildTestUsageSnapshot()
+                            } else if (settings.firstLaunchPreview) {
+                                SystemUsageSnapshot(
+                                    last7Days = systemUsage.last7Days,
+                                    last7DaysDaily = systemUsage.last7DaysDaily,
+                                    beforeInstallUsage = systemUsage.beforeInstallUsage,
+                                    beforeInstallDailyUsage = systemUsage.beforeInstallDailyUsage,
+                                    appInstallEpochDay = LocalDate.now().toEpochDay()
+                                )
+                            } else {
+                                systemUsage
+                            },
+                            usageStatsGranted = previewUsageStatsGranted,
+                            firstLaunchPreview = settings.firstLaunchPreview,
+                            detailed = true,
+                            candidateNotice = candidateNotice,
+                            onOpenDetails = {},
+                            onOpenPro = { currentScreen = AppScreen.Pro },
+                            onCandidateChange = { packageName, checked ->
+                                if (!checked || settings.canSelectMore(packageName)) {
+                                    candidateNotice = ""
+                                    scope.launch { store.togglePackage(packageName, checked, settings) }
+                                } else {
+                                    candidateNotice = "В Free можно выбрать 2 приложения. Pro снимает лимит."
+                                }
+                            },
+                            onOpenUsageAccess = {
+                                firstLaunchHistoryRequested = true
+                                context.startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS))
+                            }
                         )
                     }
                 }
@@ -427,21 +493,11 @@ fun BlackWhiteApp() {
                             settings = settings,
                             appLabels = appLabels,
                             nowMillis = nowMillis,
-                            onStartPause = {
-                                if (!settings.canPauseToday()) {
-                                    heroNotice = "Короткие паузы на сегодня закончились."
-                                } else {
-                                    heroNotice = ""
-                                    scope.launch {
-                                        store.setAppEnabled(true)
-                                        store.pauseFor(15)
-                                    }
-                                }
-                            },
                             onAllowApp = { packageName ->
                                 when {
                                     !settings.canAllowOneAppToday() -> {
-                                        heroNotice = "Разрешить одно приложение можно 1 раз в день. Следующий раз будет завтра."
+                                        heroNotice = "Пауза на 60 минут сегодня уже использована."
+                                        currentScreen = AppScreen.Home
                                     }
 
                                     packageName.isBlank() -> {
@@ -454,8 +510,35 @@ fun BlackWhiteApp() {
                                             store.clearPause()
                                             store.setAppEnabled(true)
                                             store.allowOneApp(packageName)
+                                            currentScreen = AppScreen.Home
                                         }
                                     }
+                                }
+                            },
+                            onUsePauseInstead = {
+                                heroNotice = ""
+                                scope.launch {
+                                    if (settings.pauseCountToday < BlackWhiteSettings.DAILY_EMERGENCY_PAUSE_LIMIT) {
+                                        store.setAppEnabled(true)
+                                        store.pauseFor(15, BlackWhiteSettings.DAILY_EMERGENCY_PAUSE_LIMIT)
+                                        if (settings.pauseCountToday >= BlackWhiteSettings.DAILY_PAUSE_LIMIT) {
+                                            heroNotice = "Дали дополнительную паузу на 15 минут вместо выключения до завтра."
+                                        }
+                                    }
+                                    currentScreen = AppScreen.Home
+                                }
+                            },
+                            onKeepEnabled = {
+                                heroNotice = ""
+                                currentScreen = AppScreen.Home
+                            },
+                            onConfirmDisableUntilTomorrow = {
+                                heroNotice = ""
+                                scope.launch {
+                                    store.clearPause()
+                                    store.clearAllowedApp()
+                                    store.setAppEnabled(false)
+                                    currentScreen = AppScreen.Home
                                 }
                             }
                         )
@@ -597,8 +680,8 @@ private fun HeroCard(
     allowedAppLabel: String,
     notice: String,
     onEnable: () -> Unit,
-    onDisable: () -> Unit,
-    onPause: () -> Unit
+    onPause15: () -> Unit,
+    onPause60: () -> Unit
 ) {
     val isPaused = settings.isPaused(nowMillis)
     val hasSelectedApps = settings.selectedPackages.isNotEmpty()
@@ -609,6 +692,16 @@ private fun HeroCard(
         )
     } else {
         ""
+    }
+    val pauseCount = settings.pauseCountToday.coerceIn(0, BlackWhiteSettings.DAILY_PAUSE_LIMIT)
+    val allowedCount = settings.allowedAppCountToday.coerceIn(0, BlackWhiteSettings.DAILY_ALLOWED_APP_LIMIT)
+    val heroMessages = buildList {
+        if (settings.isAppEnabled && allowedRemainingLabel.isNotBlank() && allowedAppLabel.isNotBlank()) {
+            add("$allowedAppLabel разрешен еще $allowedRemainingLabel")
+        }
+        if (notice.isNotBlank()) {
+            add(notice)
+        }
     }
     SectionCard {
         Text(
@@ -640,14 +733,6 @@ private fun HeroCard(
                 color = Color(0xFF444444)
             )
         }
-        if (settings.isAppEnabled && allowedRemainingLabel.isNotBlank() && allowedAppLabel.isNotBlank()) {
-            Spacer(Modifier.height(6.dp))
-            Text(
-                "$allowedAppLabel разрешен еще $allowedRemainingLabel",
-                style = MaterialTheme.typography.bodyMedium,
-                color = Color(0xFF8A6D00)
-            )
-        }
         Spacer(Modifier.height(12.dp))
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -658,28 +743,59 @@ private fun HeroCard(
                 modifier = Modifier.weight(1f).height(58.dp),
                 selected = hasSelectedApps && settings.isAppEnabled && !isPaused,
                 onClick = onEnable,
-                label = { HeroButtonContent(Icons.Default.PowerSettingsNew, "вкл") }
-            )
-            FilterChip(
-                modifier = Modifier.weight(1f).height(58.dp),
-                selected = !settings.isAppEnabled,
-                onClick = onDisable,
-                label = { HeroButtonContent(Icons.Default.PowerOff, "до завтра") }
+                label = { HeroButtonContent(Icons.Default.PowerSettingsNew, "") }
             )
             FilterChip(
                 modifier = Modifier.weight(1f).height(58.dp),
                 selected = isPaused,
-                onClick = onPause,
-                label = { PauseHeroButtonContent() }
+                onClick = onPause15,
+                label = {
+                    HeroButtonContent(Icons.Default.Pause, "")
+                }
+            )
+            FilterChip(
+                modifier = Modifier.weight(1f).height(58.dp),
+                selected = allowedRemainingLabel.isNotBlank() || (hasSelectedApps && !settings.isAppEnabled),
+                onClick = onPause60,
+                label = {
+                    HeroButtonContent(
+                        Icons.Default.Stop,
+                        "",
+                        iconSize = 30.dp
+                    )
+                }
             )
         }
-        if (notice.isNotBlank()) {
-            Spacer(Modifier.height(10.dp))
-            Text(
-                notice,
-                style = MaterialTheme.typography.bodyMedium,
-                color = Color(0xFF8A6D00)
+        Spacer(Modifier.height(4.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            HeroButtonCaption(
+                if (hasSelectedApps && settings.isAppEnabled && !isPaused) "вкл" else "",
+                Modifier.weight(1f)
             )
+            HeroButtonCaption(
+                if (pauseCount > 0) "$pauseCount/${BlackWhiteSettings.DAILY_PAUSE_LIMIT}" else "",
+                Modifier.weight(1f)
+            )
+            HeroButtonCaption(
+                if (allowedCount > 0) "$allowedCount/${BlackWhiteSettings.DAILY_ALLOWED_APP_LIMIT}" else "",
+                Modifier.weight(1f)
+            )
+        }
+        if (heroMessages.isNotEmpty()) {
+            Spacer(Modifier.height(10.dp))
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                heroMessages.forEach { message ->
+                    Text(
+                        message,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Color(0xFF8A6D00)
+                    )
+                }
+            }
         }
     }
 }
@@ -689,118 +805,221 @@ private fun PauseOptionsCard(
     settings: BlackWhiteSettings,
     appLabels: Map<String, String>,
     nowMillis: Long,
-    onStartPause: () -> Unit,
-    onAllowApp: (String) -> Unit
+    onAllowApp: (String) -> Unit,
+    onUsePauseInstead: () -> Unit,
+    onKeepEnabled: () -> Unit,
+    onConfirmDisableUntilTomorrow: () -> Unit
 ) {
-    val pauseUsed = settings.pauseCountToday.coerceIn(0, BlackWhiteSettings.DAILY_PAUSE_LIMIT)
-    val pauseActive = settings.isPaused(nowMillis)
+    var showDisableConfirm by remember { mutableStateOf(false) }
+    var disableActionOnLeft by remember { mutableStateOf(false) }
+    var appToAllow by remember { mutableStateOf<Pair<String, String>?>(null) }
     val allowedActive = settings.isAppEnabled &&
         settings.allowedUntilMillis > nowMillis &&
         settings.allowedPackageName.isNotBlank()
     val allowedLabel = appLabels[settings.allowedPackageName] ?: settings.allowedPackageName
     val allowedUsed = settings.allowedAppCountToday.coerceIn(0, BlackWhiteSettings.DAILY_ALLOWED_APP_LIMIT)
+    val canShowAllowUsage = !allowedActive
     val selectedApps = settings.selectedPackages
         .map { packageName -> packageName to (appLabels[packageName] ?: packageName) }
         .sortedBy { it.second.lowercase() }
 
     Column {
-        Text(
-            "Здесь можно временно ослабить фильтр, не выключая ScrollLess на весь день.",
-            style = MaterialTheme.typography.bodyMedium,
-            color = Color(0xFF444444)
-        )
-
-        Spacer(Modifier.height(18.dp))
-        PauseOptionBlock(active = pauseActive) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text("Пауза на 15 минут", fontWeight = FontWeight.SemiBold)
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        "Использовано сегодня: $pauseUsed из ${BlackWhiteSettings.DAILY_PAUSE_LIMIT}",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = Color(0xFF555555)
-                    )
-                    if (pauseActive) {
-                        Spacer(Modifier.height(4.dp))
-                        Text(
-                            "Сейчас активна: ${settings.pauseRemainingLabel(nowMillis)}",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = Color(0xFF8A6D00),
-                            fontWeight = FontWeight.SemiBold
-                        )
-                    }
-                }
-                PauseIconButton(
-                    active = pauseActive,
-                    enabled = settings.canPauseToday() && !pauseActive,
-                    modifier = Modifier
-                        .padding(start = 10.dp)
-                        .width(56.dp),
-                    onClick = onStartPause
-                )
-            }
-        }
-
-        Spacer(Modifier.height(12.dp))
-        PauseOptionBlock {
-            Text("Пауза на 60 минут", fontWeight = FontWeight.SemiBold)
-            Spacer(Modifier.height(4.dp))
-            Text(
-                "Использовано сегодня: $allowedUsed из ${BlackWhiteSettings.DAILY_ALLOWED_APP_LIMIT}",
-                style = MaterialTheme.typography.bodyMedium,
-                color = Color(0xFF555555)
-            )
-            if (allowedActive) {
-                Spacer(Modifier.height(4.dp))
+        PauseOptionBlock(contentPadding = 0.dp) {
+            Column(Modifier.fillMaxWidth().padding(14.dp)) {
                 Text(
-                    "$allowedLabel разрешено еще ${
-                        settings.allowedUntilMillis.remainingLabel(
-                            nowMillis,
-                            BlackWhiteSettings.ONE_APP_ALLOW_MINUTES * 60_000L
-                        )
-                    }",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = Color(0xFF8A6D00),
-                    fontWeight = FontWeight.SemiBold
-                )
-            }
-            Spacer(Modifier.height(10.dp))
-
-            if (selectedApps.isEmpty()) {
-                Text(
-                    "Сначала выбери приложения для отслеживания.",
+                    "Раз в день можно на час выключать фильтр для одного приложения.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = Color(0xFF444444)
                 )
+                if (canShowAllowUsage) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "Использовано сегодня: $allowedUsed из ${BlackWhiteSettings.DAILY_ALLOWED_APP_LIMIT}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Color(0xFF555555)
+                    )
+                }
+                if (allowedActive) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "$allowedLabel разрешено еще ${
+                            settings.allowedUntilMillis.remainingLabel(
+                                nowMillis,
+                                BlackWhiteSettings.ONE_APP_ALLOW_MINUTES * 60_000L
+                            )
+                        }",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Color(0xFF8A6D00),
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+            }
+            Spacer(Modifier.height(6.dp))
+
+            if (selectedApps.isEmpty()) {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = Color.White),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+                ) {
+                    Text(
+                        "Сначала выбери приложения для отслеживания.",
+                        modifier = Modifier.fillMaxWidth().padding(14.dp),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Color(0xFF444444)
+                    )
+                }
             } else {
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     selectedApps.forEach { (packageName, label) ->
                         PauseAppRow(
                             label = label,
-                            enabled = settings.canAllowOneAppToday(),
+                            enabled = !settings.isPackageAllowed(packageName, nowMillis),
                             active = settings.isPackageAllowed(packageName, nowMillis),
-                            onClick = { onAllowApp(packageName) }
+                            onClick = {
+                                if (!settings.canAllowOneAppToday()) {
+                                    onAllowApp(packageName)
+                                } else {
+                                    appToAllow = packageName to label
+                                }
+                            }
                         )
                     }
                 }
             }
         }
+        Spacer(Modifier.height(12.dp))
+        val openDisableConfirm = {
+            disableActionOnLeft = Random.nextBoolean()
+            showDisableConfirm = true
+        }
+        if (!settings.isAppEnabled) {
+            Button(
+                onClick = openDisableConfirm,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Icon(Icons.Default.PowerOff, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text("Выключить ScrollLess до завтра")
+            }
+        } else {
+            OutlinedButton(
+                onClick = openDisableConfirm,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Icon(Icons.Default.PowerOff, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text("Выключить ScrollLess до завтра")
+            }
+        }
+    }
+    if (showDisableConfirm) {
+        val canOfferExtraPause = settings.pauseCountToday < BlackWhiteSettings.DAILY_EMERGENCY_PAUSE_LIMIT
+        val isExtraPause = settings.pauseCountToday >= BlackWhiteSettings.DAILY_PAUSE_LIMIT
+        AlertDialog(
+            onDismissRequest = { showDisableConfirm = false },
+            text = {
+                Text(
+                    if (canOfferExtraPause) {
+                        if (isExtraPause) {
+                            "Паузы помогают сохранить контроль, лучше используйте их.\n\nДадим еще одну паузу на 15 минут."
+                        } else {
+                            "Паузы помогают сохранить контроль, лучше используйте их."
+                        }
+                    } else {
+                        "Дай себе шанс продержаться до завтра."
+                    }
+                )
+            },
+            confirmButton = {
+                if (disableActionOnLeft) {
+                    Button(
+                        onClick = {
+                            showDisableConfirm = false
+                            if (canOfferExtraPause) {
+                                onUsePauseInstead()
+                            } else {
+                                onKeepEnabled()
+                            }
+                        }
+                    ) {
+                        Text(if (canOfferExtraPause) "Пауза" else "Оставить")
+                    }
+                } else {
+                    TextButton(
+                        onClick = {
+                            showDisableConfirm = false
+                            onConfirmDisableUntilTomorrow()
+                        }
+                    ) {
+                        Text("Выключить")
+                    }
+                }
+            },
+            dismissButton = {
+                if (disableActionOnLeft) {
+                    TextButton(
+                        onClick = {
+                            showDisableConfirm = false
+                            onConfirmDisableUntilTomorrow()
+                        }
+                    ) {
+                        Text("Выключить")
+                    }
+                } else {
+                    Button(
+                        onClick = {
+                            showDisableConfirm = false
+                            if (canOfferExtraPause) {
+                                onUsePauseInstead()
+                            } else {
+                                onKeepEnabled()
+                            }
+                        }
+                    ) {
+                        Text(if (canOfferExtraPause) "Пауза" else "Оставить")
+                    }
+                }
+            }
+        )
+    }
+    appToAllow?.let { (packageName, label) ->
+        AlertDialog(
+            onDismissRequest = { appToAllow = null },
+            text = {
+                Text("Выключить фильтр для $label на 60 минут?")
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        appToAllow = null
+                        onAllowApp(packageName)
+                    }
+                ) {
+                    Text("Выключить")
+                }
+            },
+            dismissButton = {
+                Button(onClick = { appToAllow = null }) {
+                    Text("Оставить")
+                }
+            }
+        )
     }
 }
 
 @Composable
 private fun PauseOptionBlock(
     active: Boolean = false,
+    contentPadding: Dp = 16.dp,
     content: @Composable ColumnScope.() -> Unit
 ) {
     Card(
         colors = CardDefaults.cardColors(
-            containerColor = if (active) Color(0xFFEAF4EE) else Color.White
+            containerColor = if (active) Color(0xFFEAF4EE) else Color(0xFFF7F7F2)
         ),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
     ) {
-        Column(Modifier.fillMaxWidth().padding(16.dp), content = content)
+        Column(Modifier.fillMaxWidth().padding(contentPadding), content = content)
     }
 }
 
@@ -808,6 +1027,8 @@ private fun PauseOptionBlock(
 private fun PauseIconButton(
     active: Boolean,
     enabled: Boolean,
+    inactiveIcon: ImageVector,
+    inactiveIconSize: Dp = 24.dp,
     modifier: Modifier = Modifier,
     onClick: () -> Unit
 ) {
@@ -825,8 +1046,9 @@ private fun PauseIconButton(
         )
     ) {
         Icon(
-            imageVector = if (active) Icons.Default.PlayArrow else Icons.Default.Pause,
-            contentDescription = null
+            imageVector = if (active) Icons.Default.PlayArrow else inactiveIcon,
+            contentDescription = null,
+            modifier = Modifier.size(if (active) 24.dp else inactiveIconSize)
         )
     }
 }
@@ -840,34 +1062,41 @@ private fun PauseAppRow(
 ) {
     Card(
         colors = CardDefaults.cardColors(
-            containerColor = if (active) Color(0xFFEAF4EE) else Color.White
+            containerColor = if (active) Color(0xFFF0E7FF) else Color.White
         ),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(start = 12.dp, top = 12.dp, end = 0.dp, bottom = 12.dp),
+                .padding(14.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Icon(
                 imageVector = Icons.Default.Apps,
                 contentDescription = null,
-                tint = Color(0xFF222222)
+                tint = if (active) Color(0xFF5E35B1) else Color(0xFF222222)
             )
             Column(
                 modifier = Modifier
                     .weight(1f)
-                    .padding(horizontal = 10.dp)
+                    .padding(horizontal = 12.dp)
             ) {
                 Text(label, fontWeight = FontWeight.Medium)
             }
-            PauseIconButton(
-                active = active,
-                enabled = enabled && !active,
+            Box(
                 modifier = Modifier.width(56.dp),
-                onClick = onClick
-            )
+                contentAlignment = Alignment.CenterEnd
+            ) {
+                PauseIconButton(
+                    active = active,
+                    enabled = enabled && !active,
+                    inactiveIcon = Icons.Default.Stop,
+                    inactiveIconSize = 30.dp,
+                    modifier = Modifier.width(56.dp),
+                    onClick = onClick
+                )
+            }
         }
     }
 }
@@ -880,9 +1109,9 @@ private fun SettingsNavCard(
     onFilterClick: () -> Unit
 ) {
     val appsCountLabel = if (settings.isPro) {
-        "${settings.selectedPackages.size}/∞"
+        settings.selectedPackages.size.toString()
     } else {
-        "${settings.selectedPackages.size}/${BlackWhiteSettings.FREE_APP_LIMIT}"
+        "${settings.selectedPackages.size.coerceAtMost(BlackWhiteSettings.FREE_APP_LIMIT)}/${BlackWhiteSettings.FREE_APP_LIMIT}"
     }
     SectionCard {
         Text("Настройки", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
@@ -1006,36 +1235,34 @@ private fun AppsButtonContent(countLabel: String) {
 }
 
 @Composable
-private fun PauseHeroButtonContent() {
+private fun HeroButtonContent(icon: ImageVector, label: String, iconSize: Dp = 24.dp) {
     Column(
         modifier = Modifier.fillMaxWidth(),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Icon(Icons.Default.Pause, contentDescription = null)
-        Text(
-            "15 / 60",
-            textAlign = TextAlign.Center,
-            fontSize = 11.sp,
-            fontWeight = FontWeight.SemiBold,
-            maxLines = 1
-        )
+        Icon(icon, contentDescription = null, modifier = Modifier.size(iconSize))
+        if (label.isNotBlank()) {
+            Text(
+                label,
+                textAlign = TextAlign.Center,
+                fontSize = 10.sp,
+                maxLines = 1
+            )
+        }
     }
 }
 
 @Composable
-private fun HeroButtonContent(icon: ImageVector, label: String) {
-    Column(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        Icon(icon, contentDescription = null)
-        Text(
-            label,
-            textAlign = TextAlign.Center,
-            fontSize = 10.sp,
-            maxLines = 1
-        )
-    }
+private fun HeroButtonCaption(label: String, modifier: Modifier = Modifier) {
+    Text(
+        label,
+        modifier = modifier,
+        textAlign = TextAlign.Center,
+        style = MaterialTheme.typography.bodySmall,
+        fontWeight = FontWeight.Medium,
+        color = Color(0xFF444444),
+        maxLines = 1
+    )
 }
 
 @Composable
@@ -1058,13 +1285,14 @@ private fun IntroCard(onDismiss: () -> Unit) {
 @Composable
 private fun UsageCard(
     settings: BlackWhiteSettings,
+    breakHistory: Map<Long, DailyBreakStats>,
     appLabels: Map<String, String>,
     systemUsage: SystemUsageSnapshot,
     usageStatsGranted: Boolean,
     firstLaunchPreview: Boolean,
-    expanded: Boolean,
-    onToggleExpanded: () -> Unit,
+    detailed: Boolean,
     candidateNotice: String,
+    onOpenDetails: () -> Unit,
     onOpenPro: () -> Unit,
     onCandidateChange: (String, Boolean) -> Unit,
     onOpenUsageAccess: () -> Unit
@@ -1126,18 +1354,20 @@ private fun UsageCard(
     val currentCandidatePairs = currentTopCandidates.map { it.key to it.value }
     val topCandidates = historicalTopCandidates.ifEmpty { currentCandidatePairs }
     var pinnedCandidates by remember { mutableStateOf<List<Pair<String, Long>>>(emptyList()) }
-    LaunchedEffect(expanded, topCandidates) {
-        if (!expanded) {
+    var candidatesExpanded by remember { mutableStateOf(false) }
+    LaunchedEffect(detailed, topCandidates) {
+        if (!detailed) {
             pinnedCandidates = emptyList()
+            candidatesExpanded = false
         } else if (pinnedCandidates.isEmpty()) {
             pinnedCandidates = topCandidates
         }
     }
-    val displayedCandidates = if (expanded && pinnedCandidates.isNotEmpty()) pinnedCandidates else topCandidates
+    val displayedCandidates = if (detailed && pinnedCandidates.isNotEmpty()) pinnedCandidates else topCandidates
     val summaryText = if (settings.selectedPackages.isEmpty()) {
         "Выбери приложения, и ScrollLess начнет считать время в них."
     } else if (firstLaunchPreview && usageStatsGranted && selectedBaselineDaily > 0L) {
-        "История подключена. Ниже видно, сколько выбранные приложения использовались до ScrollLess."
+        "История подключена.\n\nВы можете посмотреть, сколько выбранные приложения использовались до ScrollLess. Статистику \"После\" сейчас собираем."
     } else if (firstLaunchPreview && usageStatsGranted) {
         "История подключена. Выбери приложения, чтобы увидеть их использование до ScrollLess."
     } else if (firstLaunchPreview) {
@@ -1146,6 +1376,8 @@ private fun UsageCard(
         "С подключенным ScrollLess выбранные приложения используются в среднем на ${averageSaved.formatDuration()} меньше в день. Это примерно ${(averageDelta * 7L).formatDuration()} в неделю."
     } else if (usageStatsGranted && selectedBaselineDaily > 0L && selectedAfterDaily > 0L) {
         "Сейчас выбранные приложения используются на ${(-averageDelta).formatDuration()} больше старой нормы."
+    } else if (usageStatsGranted && selectedBaselineDaily > 0L && selectedAfterDaily <= 0L) {
+        "Ниже видно, сколько выбранные приложения использовались до ScrollLess. Статистику после этого пока собираем."
     } else if (usageStatsGranted && (selectedToday > 0L || selectedYesterday > 0L)) {
         "ScrollLess уже считает время в выбранных приложениях. Сравнение с прошлой привычкой появится после накопления первых данных."
     } else if (usageStatsGranted) {
@@ -1155,12 +1387,10 @@ private fun UsageCard(
     }
 
     SectionCard {
-        SectionHeaderRow(
-            title = "Прогресс",
-            expanded = expanded,
-            onClick = onToggleExpanded
-        )
-        Spacer(Modifier.height(10.dp))
+        if (!detailed) {
+            Text("Прогресс", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(10.dp))
+        }
         if (!usageStatsGranted) {
             Text(
                 summaryText,
@@ -1181,52 +1411,82 @@ private fun UsageCard(
             } else {
                 UsageDashboard(
                     settings = settings,
+                    breakHistory = breakHistory,
                     todayUsage = todayUsage,
-                    progressDays = progressDays,
                     baselineAverageDaily = displayedBaselineDaily,
                     selectedAfterDaily = displayedAfterDaily,
                     averageDelta = averageDelta,
                     baselineMeasuredDays = baselineMeasuredDays,
-                    showTrend = expanded
+                    showTrend = detailed,
+                    trackedAppsContent = {
+                        ProgressTable(
+                            settings = settings,
+                            appLabels = appLabels,
+                            baselineUsage = baselineUsage,
+                            baselineDailyUsage = baselineDailyUsage,
+                            baselineMeasuredDays = baselineMeasuredEpochDays,
+                            dailyUsage = chartDailyUsage,
+                            appInstallEpochDay = systemUsage.appInstallEpochDay
+                        )
+                    }
                 )
             }
-            if (!expanded) return@SectionCard
-            Spacer(Modifier.height(26.dp))
-            ProgressTable(
-                settings = settings,
-                appLabels = appLabels,
-                baselineUsage = baselineUsage,
-                baselineDailyUsage = baselineDailyUsage,
-                baselineMeasuredDays = baselineMeasuredEpochDays,
-                dailyUsage = chartDailyUsage,
-                appInstallEpochDay = systemUsage.appInstallEpochDay
-            )
+            if (!detailed) {
+                Spacer(Modifier.height(12.dp))
+                OutlinedButton(onClick = onOpenDetails, modifier = Modifier.fillMaxWidth()) {
+                    Text("Подробнее")
+                }
+                return@SectionCard
+            }
+            if (settings.selectedPackages.isNotEmpty() && (selectedBaselineDaily <= 0L || selectedAfterDaily <= 0L)) {
+                Spacer(Modifier.height(26.dp))
+                ProgressTable(
+                    settings = settings,
+                    appLabels = appLabels,
+                    baselineUsage = baselineUsage,
+                    baselineDailyUsage = baselineDailyUsage,
+                    baselineMeasuredDays = baselineMeasuredEpochDays,
+                    dailyUsage = chartDailyUsage,
+                    appInstallEpochDay = systemUsage.appInstallEpochDay
+                )
+                if (breakHistory.hasCompletedBreakDay()) {
+                    Spacer(Modifier.height(24.dp))
+                    BreakAverageCard(history = breakHistory)
+                }
+            }
             if (displayedCandidates.isNotEmpty()) {
                 Spacer(Modifier.height(26.dp))
-                Text("Похоже, здесь тоже уходит время", fontWeight = FontWeight.Medium)
-                Spacer(Modifier.height(8.dp))
-                if (candidateNotice.isNotBlank()) {
-                    Text(
-                        candidateNotice,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Color(0xFF8A6D00)
-                    )
+                SectionHeaderRow(
+                    title = "На какие еще приложения уходит время",
+                    expanded = candidatesExpanded,
+                    onClick = { candidatesExpanded = !candidatesExpanded },
+                    fontWeight = FontWeight.Normal
+                )
+                if (candidatesExpanded) {
                     Spacer(Modifier.height(8.dp))
-                    if (!settings.isPro && settings.selectedPackages.size >= BlackWhiteSettings.FREE_APP_LIMIT) {
-                        OutlinedButton(onClick = onOpenPro) {
-                            Text("Снять лимит")
-                        }
-                        Spacer(Modifier.height(8.dp))
-                    }
-                }
-                Column(verticalArrangement = Arrangement.spacedBy(0.dp)) {
-                    displayedCandidates.forEach { entry ->
-                        CandidateRow(
-                            label = appLabels[entry.first] ?: entry.first,
-                            duration = entry.second,
-                            checked = settings.selectedPackages.contains(entry.first),
-                            onCheckedChange = { checked -> onCandidateChange(entry.first, checked) }
+                    if (candidateNotice.isNotBlank()) {
+                        Text(
+                            candidateNotice,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color(0xFF8A6D00)
                         )
+                        Spacer(Modifier.height(8.dp))
+                        if (!settings.isPro && settings.selectedPackages.size >= BlackWhiteSettings.FREE_APP_LIMIT) {
+                            OutlinedButton(onClick = onOpenPro) {
+                                Text("Снять лимит")
+                            }
+                            Spacer(Modifier.height(8.dp))
+                        }
+                    }
+                    Column(verticalArrangement = Arrangement.spacedBy(0.dp)) {
+                        displayedCandidates.forEach { entry ->
+                            CandidateRow(
+                                label = appLabels[entry.first] ?: entry.first,
+                                duration = entry.second,
+                                checked = settings.selectedPackages.contains(entry.first),
+                                onCheckedChange = { checked -> onCandidateChange(entry.first, checked) }
+                            )
+                        }
                     }
                 }
             }
@@ -1237,13 +1497,14 @@ private fun UsageCard(
 @Composable
 private fun UsageDashboard(
     settings: BlackWhiteSettings,
+    breakHistory: Map<Long, DailyBreakStats>,
     todayUsage: Map<String, Long>,
-    progressDays: List<UsageBar>,
     baselineAverageDaily: Long,
     selectedAfterDaily: Long,
     averageDelta: Long,
     baselineMeasuredDays: Int,
-    showTrend: Boolean
+    showTrend: Boolean,
+    trackedAppsContent: @Composable () -> Unit
 ) {
     if (settings.selectedPackages.isEmpty()) return
     if (baselineAverageDaily <= 0L) return
@@ -1293,33 +1554,22 @@ private fun UsageDashboard(
         duration = selectedToday,
         modifier = Modifier.fillMaxWidth()
     )
-    Spacer(Modifier.height(14.dp))
-    BreakHistoryCard(history = settings.breakHistory)
-    Spacer(Modifier.height(26.dp))
-    Text(
-        "График по дням",
-        style = MaterialTheme.typography.titleSmall,
-        fontWeight = FontWeight.SemiBold
-    )
-    Spacer(Modifier.height(8.dp))
-    UsageBarChart(
-        bars = progressDays,
-        baselineAverageDaily = baselineAverageDaily
-    )
-    Spacer(Modifier.height(10.dp))
-    UsageChartLegend()
-    Spacer(Modifier.height(8.dp))
-    Text(
-        "Сравниваем завершенные дни с такими же днями недели до установки.",
-        style = MaterialTheme.typography.bodySmall,
-        color = Color(0xFF666666)
-    )
+    Spacer(Modifier.height(24.dp))
+    trackedAppsContent()
+    if (breakHistory.hasCompletedBreakDay()) {
+        Spacer(Modifier.height(24.dp))
+        BreakAverageCard(history = breakHistory)
+    }
 }
 
 @Composable
-private fun BreakHistoryCard(history: Map<Long, DailyBreakStats>) {
+private fun BreakAverageCard(history: Map<Long, DailyBreakStats>) {
     val today = LocalDate.now().toEpochDay()
     val days = (6L downTo 0L).map { today - it }
+    val totalShortPauses = days.sumOf { history[it]?.pauseCount ?: 0 }
+    val totalLongPauses = days.sumOf { history[it]?.allowedAppCount ?: 0 }
+    val averageShortPauses = totalShortPauses.toDouble() / days.size
+    val averageLongPauses = totalLongPauses.toDouble() / days.size
     Card(
         colors = CardDefaults.cardColors(containerColor = Color(0xFFF1F1EC)),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
@@ -1330,40 +1580,28 @@ private fun BreakHistoryCard(history: Map<Long, DailyBreakStats>) {
                 .padding(12.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Text("Паузы за день", fontWeight = FontWeight.Medium)
-            Text(
-                "Сколько раз включались короткая пауза и разрешение одного приложения.",
-                style = MaterialTheme.typography.bodySmall,
-                color = Color(0xFF666666)
-            )
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text("День", modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall, color = Color(0xFF666666))
-                Text("15м", modifier = Modifier.weight(0.7f), textAlign = TextAlign.End, style = MaterialTheme.typography.bodySmall, color = Color(0xFF666666))
-                Text("60м", modifier = Modifier.weight(0.7f), textAlign = TextAlign.End, style = MaterialTheme.typography.bodySmall, color = Color(0xFF666666))
-            }
-            days.forEach { day ->
-                val stats = history[day] ?: DailyBreakStats()
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        if (day == today) "Сегодня" else day.shortDayLabel(),
-                        modifier = Modifier.weight(1f),
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                    Text(
-                        stats.pauseCount.toString(),
-                        modifier = Modifier.weight(0.7f),
-                        textAlign = TextAlign.End,
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                    Text(
-                        stats.allowedAppCount.toString(),
-                        modifier = Modifier.weight(0.7f),
-                        textAlign = TextAlign.End,
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                }
-            }
+            Text("Паузы в среднем за день", fontWeight = FontWeight.Medium)
+            BreakAverageRow("Пауза 15 минут", averageShortPauses)
+            BreakAverageRow("Пауза 60 минут", averageLongPauses)
         }
+    }
+}
+
+@Composable
+private fun BreakAverageRow(label: String, value: Double) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            label,
+            modifier = Modifier.weight(1f),
+            style = MaterialTheme.typography.bodySmall,
+            color = Color(0xFF444444)
+        )
+        Text(
+            value.formatAverageCount(),
+            textAlign = TextAlign.End,
+            style = MaterialTheme.typography.bodySmall,
+            fontWeight = FontWeight.Medium
+        )
     }
 }
 
@@ -1583,7 +1821,8 @@ private data class UsageBar(
 private fun SectionHeaderRow(
     title: String,
     expanded: Boolean,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    fontWeight: FontWeight = FontWeight.SemiBold
 ) {
     Row(
         modifier = Modifier
@@ -1596,7 +1835,7 @@ private fun SectionHeaderRow(
             title,
             modifier = Modifier.weight(1f),
             style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.SemiBold
+            fontWeight = fontWeight
         )
         Icon(
             imageVector = if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
@@ -1659,8 +1898,6 @@ private fun ProgressTable(
     appInstallEpochDay: Long
 ) {
     if (settings.selectedPackages.isEmpty()) return
-    Text("Отслеживаемые приложения", fontWeight = FontWeight.Medium)
-    Spacer(Modifier.height(8.dp))
     Card(
         colors = CardDefaults.cardColors(containerColor = Color(0xFFF1F1EC)),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
@@ -1925,24 +2162,32 @@ private fun ScheduleCard(
     val weekdaySchedule = settings.daySchedules[1] ?: DaySchedule()
     val weekendSchedule = settings.daySchedules[6] ?: DaySchedule()
     SectionCard {
-        Text(
-            when {
-                !settings.isPro -> "Pro добавляет расписание: фильтр будет включаться только в выбранные часы."
-                settings.scheduleEnabled -> "Включено: будни ${weekdaySchedule.shortRange()}, выходные ${weekendSchedule.shortRange()}."
-                else -> "Если выключено, фильтр работает всегда."
-            },
-            style = MaterialTheme.typography.bodyMedium,
-            color = if (settings.isPro) Color(0xFF444444) else Color(0xFF8A6D00)
-        )
+        if (!settings.isPro || !settings.scheduleEnabled) {
+            Text(
+                if (!settings.isPro) {
+                    "Pro добавляет расписание: фильтр будет включаться только в выбранные часы."
+                } else {
+                    "Сейчас фильтр работает постоянно."
+                },
+                style = MaterialTheme.typography.bodyMedium,
+                color = if (settings.isPro) Color(0xFF444444) else Color(0xFF8A6D00)
+            )
+        }
         if (!settings.isPro) {
             Spacer(Modifier.height(10.dp))
             Button(onClick = onOpenPro) {
                 Text("Открыть Pro")
             }
         }
-        Spacer(Modifier.height(12.dp))
+        if (!settings.isPro || !settings.scheduleEnabled) {
+            Spacer(Modifier.height(12.dp))
+        }
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("Включить расписание", modifier = Modifier.weight(1f), fontWeight = FontWeight.Medium)
+            Text(
+                if (settings.isPro && settings.scheduleEnabled) "Расписание включено" else "Включить расписание",
+                modifier = Modifier.weight(1f),
+                fontWeight = FontWeight.Medium
+            )
             Switch(
                 checked = settings.isPro && settings.scheduleEnabled,
                 onCheckedChange = onScheduleChange,
@@ -2493,6 +2738,18 @@ private fun buildTestUsageSnapshot(): SystemUsageSnapshot {
     )
 }
 
+private fun buildTestBreakHistory(): Map<Long, DailyBreakStats> {
+    val today = LocalDate.now().toEpochDay()
+    return mapOf(
+        today - 6L to DailyBreakStats(pauseCount = 1, allowedAppCount = 0),
+        today - 5L to DailyBreakStats(pauseCount = 2, allowedAppCount = 1),
+        today - 4L to DailyBreakStats(pauseCount = 1, allowedAppCount = 0),
+        today - 3L to DailyBreakStats(pauseCount = 3, allowedAppCount = 1),
+        today - 2L to DailyBreakStats(pauseCount = 1, allowedAppCount = 0),
+        today - 1L to DailyBreakStats(pauseCount = 2, allowedAppCount = 1)
+    )
+}
+
 private fun testMinutes(epochDay: Long, weekday: Long, weekend: Long): Long {
     val isWeekend = LocalDate.ofEpochDay(epochDay).dayOfWeek.value >= 6
     val minutes = if (isWeekend) weekend else weekday
@@ -2560,6 +2817,18 @@ private fun Long.formatDuration(): String {
         hours > 0L -> "${hours}ч"
         else -> "${minutes}м"
     }
+}
+
+private fun Double.formatAverageCount(): String {
+    val tenths = (this.coerceAtLeast(0.0) * 10.0 + 0.5).toInt()
+    val whole = tenths / 10
+    val fraction = tenths % 10
+    return if (fraction == 0) whole.toString() else "$whole,$fraction"
+}
+
+private fun Map<Long, DailyBreakStats>.hasCompletedBreakDay(): Boolean {
+    val today = LocalDate.now().toEpochDay()
+    return keys.any { it < today }
 }
 
 private fun Long.toDisplayedMinuteMillis(): Long {
