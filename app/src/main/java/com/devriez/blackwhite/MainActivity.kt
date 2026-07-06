@@ -55,6 +55,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -773,15 +774,15 @@ private fun HeroCard(
             verticalAlignment = Alignment.CenterVertically
         ) {
             HeroButtonCaption(
-                if (hasSelectedApps && settings.isAppEnabled && !isPaused) "вкл" else "",
+                "вкл",
                 Modifier.weight(1f)
             )
             HeroButtonCaption(
-                if (pauseCount > 0) "$pauseCount/${BlackWhiteSettings.DAILY_PAUSE_LIMIT}" else "",
+                "$pauseCount/${BlackWhiteSettings.DAILY_PAUSE_LIMIT}",
                 Modifier.weight(1f)
             )
             HeroButtonCaption(
-                if (allowedCount > 0) "$allowedCount/${BlackWhiteSettings.DAILY_ALLOWED_APP_LIMIT}" else "",
+                "$allowedCount/${BlackWhiteSettings.DAILY_ALLOWED_APP_LIMIT}",
                 Modifier.weight(1f)
             )
         }
@@ -1113,6 +1114,7 @@ private fun SettingsNavCard(
     } else {
         "${settings.selectedPackages.size.coerceAtMost(BlackWhiteSettings.FREE_APP_LIMIT)}/${BlackWhiteSettings.FREE_APP_LIMIT}"
     }
+    val highlightApps = settings.selectedPackages.isEmpty()
     SectionCard {
         Text("Настройки", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
         Spacer(Modifier.height(4.dp))
@@ -1125,20 +1127,35 @@ private fun SettingsNavCard(
                 modifier = Modifier.weight(1f).height(58.dp),
                 selected = false,
                 onClick = onAppsClick,
-                label = { AppsButtonContent(appsCountLabel) }
+                colors = FilterChipDefaults.filterChipColors(
+                    containerColor = if (highlightApps) Color(0xFFFFF1B8) else Color.Transparent,
+                    labelColor = Color(0xFF222222),
+                    iconColor = Color(0xFF222222)
+                ),
+                label = { AppsButtonContent() }
             )
             FilterChip(
                 modifier = Modifier.weight(1f).height(58.dp),
-                selected = false,
+                selected = settings.isPro && settings.scheduleEnabled,
                 onClick = onScheduleClick,
-                label = { HeroButtonContent(Icons.Default.Schedule, "расписание") }
+                label = { HeroButtonContent(Icons.Default.Schedule, "") }
             )
             FilterChip(
                 modifier = Modifier.weight(1f).height(58.dp),
                 selected = false,
                 onClick = onFilterClick,
-                label = { HeroButtonContent(Icons.Default.Visibility, "режим") }
+                label = { HeroButtonContent(Icons.Default.Visibility, "") }
             )
+        }
+        Spacer(Modifier.height(4.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            HeroButtonCaption(appsCountLabel, Modifier.weight(1f))
+            HeroButtonCaption("расписание", Modifier.weight(1f))
+            HeroButtonCaption("режим", Modifier.weight(1f))
         }
     }
 }
@@ -1213,22 +1230,16 @@ private fun ProBenefitRow(
 }
 
 @Composable
-private fun AppsButtonContent(countLabel: String) {
+private fun AppsButtonContent() {
     Column(
         modifier = Modifier.fillMaxWidth(),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Text(
-            countLabel,
+            "Apps",
             textAlign = TextAlign.Center,
             fontWeight = FontWeight.SemiBold,
-            fontSize = 15.sp,
-            maxLines = 1
-        )
-        Text(
-            "приложений",
-            textAlign = TextAlign.Center,
-            fontSize = 10.sp,
+            fontSize = 17.sp,
             maxLines = 1
         )
     }
@@ -1276,7 +1287,13 @@ private fun IntroCard(onDismiss: () -> Unit) {
             color = Color(0xFF444444)
         )
         Spacer(Modifier.height(4.dp))
-        Button(onClick = onDismiss) {
+        Button(
+            onClick = onDismiss,
+            colors = ButtonDefaults.buttonColors(
+                containerColor = Color(0xFFFFF1B8),
+                contentColor = Color(0xFF222222)
+            )
+        ) {
             Text("Понятно")
         }
     }
@@ -1398,7 +1415,14 @@ private fun UsageCard(
                 color = Color(0xFF444444)
             )
             Spacer(Modifier.height(10.dp))
-            OutlinedButton(onClick = onOpenUsageAccess) {
+            OutlinedButton(
+                onClick = onOpenUsageAccess,
+                colors = ButtonDefaults.outlinedButtonColors(
+                    containerColor = Color(0xFFFFF1B8),
+                    contentColor = Color(0xFF222222)
+                ),
+                border = BorderStroke(1.dp, Color(0xFFE0A800))
+            ) {
                 Text("Подключить историю")
             }
         } else {
