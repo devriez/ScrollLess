@@ -62,12 +62,18 @@ adb devices
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
+Если раньше была установлена старая версия с пакетом `com.devriez.blackwhite`, удали ее один раз:
+
+```bash
+adb uninstall com.devriez.blackwhite
+```
+
 ## Включение полного черно-белого режима
 
 Полный режим требует разовой выдачи системного разрешения через ADB:
 
 ```bash
-adb shell pm grant com.devriez.blackwhite android.permission.WRITE_SECURE_SETTINGS
+adb shell pm grant com.devriez.scrollless android.permission.WRITE_SECURE_SETTINGS
 ```
 
 После этого:

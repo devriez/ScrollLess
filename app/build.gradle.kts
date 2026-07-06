@@ -9,7 +9,7 @@ android {
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.devriez.blackwhite"
+        applicationId = "com.devriez.scrollless"
         minSdk = 26
         targetSdk = 35
         versionCode = 1

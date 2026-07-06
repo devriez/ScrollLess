@@ -1,6 +1,8 @@
 package com.devriez.blackwhite
 
 import android.app.AppOpsManager
+import android.app.usage.UsageEvents
+import android.app.usage.UsageStats
 import android.app.usage.UsageStatsManager
 import android.content.ComponentName
 import android.content.Context
@@ -10,40 +12,50 @@ import android.os.Process
 import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Apps
-import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PowerOff
 import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -52,12 +64,14 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -66,16 +80,19 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.random.Random
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
@@ -99,20 +116,58 @@ data class InstalledApp(
 
 data class SystemUsageSnapshot(
     val last7Days: Map<String, Long> = emptyMap(),
-    val last7DaysDaily: Map<Long, Map<String, Long>> = emptyMap()
+    val last7DaysDaily: Map<Long, Map<String, Long>> = emptyMap(),
+    val beforeInstallUsage: Map<String, Long> = emptyMap(),
+    val beforeInstallDailyUsage: Map<Long, Map<String, Long>> = emptyMap(),
+    val today: Map<String, Long> = emptyMap(),
+    val appInstallEpochDay: Long = LocalDate.now().toEpochDay()
 )
 
 private val WeekdayScheduleDays = setOf(1, 2, 3, 4, 5)
 private val WeekendScheduleDays = setOf(6, 7)
+private const val BASELINE_LOOKBACK_DAYS = 30L
+private const val TEST_FACEBOOK_PACKAGE = "com.facebook.katana"
+private const val TEST_INSTAGRAM_PACKAGE = "com.instagram.android"
+private const val TEST_YOUTUBE_PACKAGE = "com.google.android.youtube"
+private const val TEST_DUOCARDS_PACKAGE = "com.duocards.app"
+private const val TEST_TELEGRAM_PACKAGE = "org.telegram.messenger"
+private const val TEST_TWITTER_PACKAGE = "com.twitter.android"
+private val RecommendedAppPackages = listOf(
+    "com.google.android.youtube",
+    "com.instagram.android",
+    "com.zhiliaoapp.musically",
+    "com.ss.android.ugc.trill",
+    "com.facebook.katana",
+    "com.instagram.barcelona",
+    "com.twitter.android",
+    "com.snapchat.android",
+    "com.reddit.frontpage",
+    "com.vkontakte.android"
+)
+private val SystemAppPackageDenylist = setOf(
+    "com.google.android.apps.nexuslauncher",
+    "com.google.android.launcher",
+    "com.android.launcher",
+    "com.android.launcher3",
+    "com.google.android.packageinstaller",
+    "com.google.android.permissioncontroller",
+    "com.android.permissioncontroller",
+    "com.google.android.gms",
+    "com.android.systemui",
+    "android"
+)
 
 private enum class AppScreen(val title: String) {
     Home("ScrollLess"),
+    Pause("Выключение"),
+    Progress("Прогресс"),
     Apps("Приложения"),
     Color("Цвет экрана"),
-    Schedule("Расписание")
+    Schedule("Расписание"),
+    Pro("ScrollLess Pro")
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun BlackWhiteApp() {
     val context = LocalContext.current
@@ -122,22 +177,52 @@ fun BlackWhiteApp() {
     var apps by remember { mutableStateOf<List<InstalledApp>>(emptyList()) }
     var permissionSnapshot by remember { mutableStateOf(PermissionSnapshot.from(context)) }
     var systemUsage by remember { mutableStateOf(SystemUsageSnapshot()) }
-    var nowMillis by remember { mutableStateOf(System.currentTimeMillis()) }
+    var nowMillis by remember { mutableLongStateOf(System.currentTimeMillis()) }
     var currentScreen by remember { mutableStateOf(AppScreen.Home) }
-    var progressExpanded by remember { mutableStateOf(false) }
     var candidateNotice by remember { mutableStateOf("") }
+    var heroNotice by remember { mutableStateOf("") }
+    var pendingSelectedPackage by remember { mutableStateOf<String?>(null) }
+    var firstLaunchHistoryRequested by remember { mutableStateOf(false) }
     val appLabels = remember(apps) { apps.associate { it.packageName to it.label } }
-    val sortedApps = remember(apps, settings.selectedPackages) {
-        apps.sortedForSelection(settings.selectedPackages)
+    val effectiveSettings = remember(settings) {
+        if (settings.testStatsEnabled) settings.withTestStatsSelection() else settings
+    }
+    val effectiveBreakHistory = remember(settings.testStatsEnabled, settings.breakHistory) {
+        if (settings.testStatsEnabled) buildTestBreakHistory() else settings.breakHistory
+    }
+    val selectedApps = remember(apps, settings.selectedPackages) {
+        apps.filter { it.packageName in settings.selectedPackages }
+            .sortedBy { it.label.lowercase() }
+    }
+    val selectedPackageNames = remember(settings.selectedPackages) { settings.selectedPackages }
+    val recommendedApps = remember(apps, selectedPackageNames) {
+        apps.recommendedForSelection()
+            .filterNot { it.packageName in selectedPackageNames }
+    }
+    val recommendedPackageNames = remember(recommendedApps) { recommendedApps.map { it.packageName }.toSet() }
+    val otherApps = remember(apps, selectedPackageNames, recommendedPackageNames) {
+        apps.alphabeticalExcept(selectedPackageNames + recommendedPackageNames)
     }
 
     LaunchedEffect(Unit) {
         apps = withContext(Dispatchers.IO) { context.loadLaunchableApps() }
         while (true) {
+            nowMillis = System.currentTimeMillis()
             permissionSnapshot = PermissionSnapshot.from(context)
-            if (permissionSnapshot.usageStatsGranted) {
+            if (settings.firstLaunchPreview) {
+                systemUsage = if (permissionSnapshot.usageStatsGranted && firstLaunchHistoryRequested) {
+                    withContext(Dispatchers.IO) { context.loadSystemUsageSnapshot() }
+                } else {
+                    SystemUsageSnapshot()
+                }
+            } else if (permissionSnapshot.usageStatsGranted) {
                 systemUsage = withContext(Dispatchers.IO) { context.loadSystemUsageSnapshot() }
-                scope.launch { store.captureBaselineIfEmpty(systemUsage.last7Days, systemUsage.last7DaysDaily) }
+                scope.launch {
+                    store.captureBaselineIfEmpty(
+                        systemUsage.beforeInstallUsage,
+                        systemUsage.beforeInstallDailyUsage
+                    )
+                }
             }
             delay(1_000L)
         }
@@ -157,16 +242,35 @@ fun BlackWhiteApp() {
         }
     }
 
+    LaunchedEffect(settings.selectedPackages) {
+        if (settings.selectedPackages.isNotEmpty()) {
+            heroNotice = ""
+        }
+    }
+
+    LaunchedEffect(settings.firstLaunchPreview) {
+        firstLaunchHistoryRequested = false
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
                 title = {
-                    Text(currentScreen.title, fontWeight = FontWeight.SemiBold)
+                    val title = if (currentScreen == AppScreen.Apps) {
+                        if (settings.isPro) {
+                            "Приложения (${settings.selectedPackages.size})"
+                        } else {
+                            "Приложения (${settings.selectedPackages.size.coerceAtMost(BlackWhiteSettings.FREE_APP_LIMIT)}/${BlackWhiteSettings.FREE_APP_LIMIT})"
+                        }
+                    } else {
+                        currentScreen.title
+                    }
+                    Text(title, fontWeight = FontWeight.SemiBold)
                 },
                 navigationIcon = {
                     if (currentScreen != AppScreen.Home) {
                         IconButton(onClick = { currentScreen = AppScreen.Home }) {
-                            Icon(Icons.Default.ArrowBack, contentDescription = "Назад")
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Назад")
                         }
                     }
                 }
@@ -176,6 +280,18 @@ fun BlackWhiteApp() {
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
+                .pointerInput(currentScreen) {
+                    var totalDragX = 0f
+                    detectHorizontalDragGestures(
+                        onDragStart = { totalDragX = 0f },
+                        onHorizontalDrag = { _, dragAmount -> totalDragX += dragAmount },
+                        onDragEnd = {
+                            if (currentScreen != AppScreen.Home && totalDragX > 140f) {
+                                currentScreen = AppScreen.Home
+                            }
+                        }
+                    )
+                }
                 .background(Color(0xFFF7F7F2))
                 .padding(padding)
                 .padding(16.dp),
@@ -183,28 +299,52 @@ fun BlackWhiteApp() {
         ) {
             when (currentScreen) {
                 AppScreen.Home -> {
+                    if (!settings.introDismissed) {
+                        item {
+                            IntroCard(onDismiss = { scope.launch { store.dismissIntro() } })
+                        }
+                    }
+
                     item {
                         HeroCard(
                             settings = settings,
                             nowMillis = nowMillis,
+                            accessibilityEnabled = permissionSnapshot.accessibilityEnabled,
+                            allowedAppLabel = appLabels[settings.allowedPackageName] ?: settings.allowedPackageName,
+                            notice = heroNotice,
                             onEnable = {
-                                scope.launch {
-                                    store.clearPause()
-                                    store.setAppEnabled(true)
+                                if (settings.selectedPackages.isEmpty()) {
+                                    heroNotice = "Сначала выбери хотя бы одно приложение в настройках."
+                                } else {
+                                    heroNotice = ""
+                                    scope.launch {
+                                        store.clearPause()
+                                        store.clearAllowedApp()
+                                        store.setAppEnabled(true)
+                                    }
                                 }
                             },
-                            onDisable = {
-                                scope.launch {
-                                    store.clearPause()
-                                    store.setAppEnabled(false)
+                            onPause15 = {
+                                if (settings.selectedPackages.isEmpty()) {
+                                    heroNotice = "Сначала выбери хотя бы одно приложение в настройках."
+                                } else if (!settings.canPauseToday()) {
+                                    heroNotice = "Все паузы на 15 мин сегодня использованы."
+                                } else {
+                                    heroNotice = ""
+                                    scope.launch {
+                                        store.setAppEnabled(true)
+                                        store.pauseFor(15)
+                                    }
                                 }
                             },
-                            onPause = {
-                                scope.launch {
-                                    store.setAppEnabled(true)
-                                    store.pauseFor(15)
+                            onPause60 = {
+                                if (settings.selectedPackages.isEmpty()) {
+                                    heroNotice = "Сначала выбери хотя бы одно приложение в настройках."
+                                } else {
+                                    heroNotice = ""
+                                    currentScreen = AppScreen.Pause
                                 }
-                            },
+                            }
                         )
                     }
 
@@ -217,15 +357,9 @@ fun BlackWhiteApp() {
                         }
                     }
 
-                    if (!settings.introDismissed) {
-                        item {
-                            IntroCard(onDismiss = { scope.launch { store.dismissIntro() } })
-                        }
-                    }
-
                     item {
                         SettingsNavCard(
-                            settings = settings,
+                            settings = effectiveSettings,
                             onAppsClick = { currentScreen = AppScreen.Apps },
                             onScheduleClick = { currentScreen = AppScreen.Schedule },
                             onFilterClick = { currentScreen = AppScreen.Color }
@@ -233,48 +367,272 @@ fun BlackWhiteApp() {
                     }
 
                     item {
+                        val previewUsageStatsGranted = if (settings.testStatsEnabled) {
+                            true
+                        } else if (settings.firstLaunchPreview) {
+                            permissionSnapshot.usageStatsGranted && firstLaunchHistoryRequested
+                        } else {
+                            permissionSnapshot.usageStatsGranted
+                        }
                         UsageCard(
-                            settings = settings,
+                            settings = effectiveSettings,
+                            breakHistory = effectiveBreakHistory,
                             appLabels = appLabels,
-                            systemUsage = systemUsage,
-                            usageStatsGranted = permissionSnapshot.usageStatsGranted,
-                            expanded = progressExpanded,
-                            highlighted = false,
-                            onToggleExpanded = { progressExpanded = !progressExpanded },
+                            systemUsage = if (settings.testStatsEnabled) {
+                                buildTestUsageSnapshot()
+                            } else if (settings.firstLaunchPreview) {
+                                SystemUsageSnapshot(
+                                    last7Days = systemUsage.last7Days,
+                                    last7DaysDaily = systemUsage.last7DaysDaily,
+                                    beforeInstallUsage = systemUsage.beforeInstallUsage,
+                                    beforeInstallDailyUsage = systemUsage.beforeInstallDailyUsage,
+                                    appInstallEpochDay = LocalDate.now().toEpochDay()
+                                )
+                            } else {
+                                systemUsage
+                            },
+                            usageStatsGranted = previewUsageStatsGranted,
+                            firstLaunchPreview = settings.firstLaunchPreview,
+                            detailed = false,
                             candidateNotice = candidateNotice,
-                            onCandidateNoticeShown = { candidateNotice = "" },
+                            onOpenDetails = { currentScreen = AppScreen.Progress },
+                            onOpenPro = { currentScreen = AppScreen.Pro },
                             onCandidateChange = { packageName, checked ->
-                                if (settings.isPro) {
+                                if (!checked || settings.canSelectMore(packageName)) {
+                                    candidateNotice = ""
                                     scope.launch { store.togglePackage(packageName, checked, settings) }
                                 } else {
-                                    candidateNotice = "Добавление кандидатов доступно в Pro."
+                                    candidateNotice = "В Free можно выбрать 2 приложения. Pro снимает лимит."
                                 }
                             },
-                            onOpenUsageAccess = { context.startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)) }
+                            onOpenUsageAccess = {
+                                firstLaunchHistoryRequested = true
+                                context.startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS))
+                            }
                         )
+                    }
+
+                    item {
+                        Spacer(Modifier.height(96.dp))
+                    }
+
+                    item {
+                        Spacer(Modifier.height(96.dp))
+                    }
+
+                    item {
+                        Spacer(Modifier.height(96.dp))
                     }
 
                     item {
                         DeveloperProCard(
                             settings = settings,
-                            onProChange = { enabled -> scope.launch { store.setPro(enabled) } }
+                            onProChange = { enabled -> scope.launch { store.setPro(enabled) } },
+                            onTestStatsChange = { enabled -> scope.launch { store.setTestStatsEnabled(enabled) } },
+                            onFirstLaunchPreviewChange = { enabled ->
+                                heroNotice = ""
+                                candidateNotice = ""
+                                firstLaunchHistoryRequested = false
+                                scope.launch { store.setFirstLaunchPreview(enabled) }
+                            },
+                            onResetBreakCounters = { scope.launch { store.resetBreakCounters() } }
+                        )
+                    }
+                }
+
+                AppScreen.Progress -> {
+                    item {
+                        val previewUsageStatsGranted = if (settings.testStatsEnabled) {
+                            true
+                        } else if (settings.firstLaunchPreview) {
+                            permissionSnapshot.usageStatsGranted && firstLaunchHistoryRequested
+                        } else {
+                            permissionSnapshot.usageStatsGranted
+                        }
+                        UsageCard(
+                            settings = effectiveSettings,
+                            breakHistory = effectiveBreakHistory,
+                            appLabels = appLabels,
+                            systemUsage = if (settings.testStatsEnabled) {
+                                buildTestUsageSnapshot()
+                            } else if (settings.firstLaunchPreview) {
+                                SystemUsageSnapshot(
+                                    last7Days = systemUsage.last7Days,
+                                    last7DaysDaily = systemUsage.last7DaysDaily,
+                                    beforeInstallUsage = systemUsage.beforeInstallUsage,
+                                    beforeInstallDailyUsage = systemUsage.beforeInstallDailyUsage,
+                                    appInstallEpochDay = LocalDate.now().toEpochDay()
+                                )
+                            } else {
+                                systemUsage
+                            },
+                            usageStatsGranted = previewUsageStatsGranted,
+                            firstLaunchPreview = settings.firstLaunchPreview,
+                            detailed = true,
+                            candidateNotice = candidateNotice,
+                            onOpenDetails = {},
+                            onOpenPro = { currentScreen = AppScreen.Pro },
+                            onCandidateChange = { packageName, checked ->
+                                if (!checked || settings.canSelectMore(packageName)) {
+                                    candidateNotice = ""
+                                    scope.launch { store.togglePackage(packageName, checked, settings) }
+                                } else {
+                                    candidateNotice = "В Free можно выбрать 2 приложения. Pro снимает лимит."
+                                }
+                            },
+                            onOpenUsageAccess = {
+                                firstLaunchHistoryRequested = true
+                                context.startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS))
+                            }
+                        )
+                    }
+                }
+
+                AppScreen.Pause -> {
+                    item {
+                        PauseOptionsCard(
+                            settings = settings,
+                            appLabels = appLabels,
+                            nowMillis = nowMillis,
+                            onAllowApp = { packageName ->
+                                when {
+                                    !settings.canAllowOneAppToday() -> {
+                                        heroNotice = "Пауза на 60 минут сегодня уже использована."
+                                        currentScreen = AppScreen.Home
+                                    }
+
+                                    packageName.isBlank() -> {
+                                        heroNotice = "Выбери приложение из списка."
+                                    }
+
+                                    else -> {
+                                        heroNotice = ""
+                                        scope.launch {
+                                            store.clearPause()
+                                            store.setAppEnabled(true)
+                                            store.allowOneApp(packageName)
+                                            currentScreen = AppScreen.Home
+                                        }
+                                    }
+                                }
+                            },
+                            onUsePauseInstead = {
+                                heroNotice = ""
+                                scope.launch {
+                                    if (settings.pauseCountToday < BlackWhiteSettings.DAILY_EMERGENCY_PAUSE_LIMIT) {
+                                        store.setAppEnabled(true)
+                                        store.pauseFor(15, BlackWhiteSettings.DAILY_EMERGENCY_PAUSE_LIMIT)
+                                        if (settings.pauseCountToday >= BlackWhiteSettings.DAILY_PAUSE_LIMIT) {
+                                            heroNotice = "Дали дополнительную паузу на 15 минут вместо выключения до завтра."
+                                        }
+                                    }
+                                    currentScreen = AppScreen.Home
+                                }
+                            },
+                            onKeepEnabled = {
+                                heroNotice = ""
+                                currentScreen = AppScreen.Home
+                            },
+                            onConfirmDisableUntilTomorrow = {
+                                heroNotice = ""
+                                scope.launch {
+                                    store.clearPause()
+                                    store.clearAllowedApp()
+                                    store.setAppEnabled(false)
+                                    currentScreen = AppScreen.Home
+                                }
+                            }
                         )
                     }
                 }
 
                 AppScreen.Apps -> {
-                    item {
-                        AppsHeader(settings = settings)
+                    stickyHeader {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(Color(0xFFF7F7F2))
+                                .padding(bottom = 4.dp)
+                        ) {
+                            AppsHeader(
+                                settings = effectiveSettings,
+                                onOpenPro = { currentScreen = AppScreen.Pro }
+                            )
+                        }
                     }
-                    items(sortedApps, key = { it.packageName }) { app ->
-                        val checked = settings.selectedPackages.contains(app.packageName)
-                        val locked = !checked && !settings.canSelectMore(app.packageName)
+                    if (selectedApps.isNotEmpty()) {
+                        item {
+                            AppsGroupHeader(
+                                title = "Выбранные приложения",
+                                description = null
+                            )
+                        }
+                        items(selectedApps, key = { "selected_${it.packageName}" }) { app ->
+                            AppRow(
+                                app = app,
+                                checked = true,
+                                locked = false,
+                                onCheckedChange = { next ->
+                                    scope.launch { store.togglePackage(app.packageName, next, settings) }
+                                }
+                            )
+                        }
+                    }
+                    if (recommendedApps.isNotEmpty()) {
+                        item {
+                            AppsGroupHeader(
+                                title = "Соцсети",
+                                description = null
+                            )
+                        }
+                        items(recommendedApps, key = { "recommended_${it.packageName}" }) { app ->
+                            val checked = settings.selectedPackages.contains(app.packageName) ||
+                                pendingSelectedPackage == app.packageName
+                            val locked = !checked && !effectiveSettings.canSelectMore(app.packageName)
+                            AppRow(
+                                app = app,
+                                checked = checked,
+                                locked = locked,
+                                onCheckedChange = { next ->
+                                    scope.launch {
+                                        if (next && app.packageName !in settings.selectedPackages) {
+                                            pendingSelectedPackage = app.packageName
+                                            delay(450L)
+                                        }
+                                        store.togglePackage(app.packageName, next, settings)
+                                        if (pendingSelectedPackage == app.packageName) {
+                                            pendingSelectedPackage = null
+                                        }
+                                    }
+                                }
+                            )
+                        }
+                        item {
+                            AppsGroupHeader(
+                                title = "Остальные приложения",
+                                description = null
+                            )
+                        }
+                    }
+                    items(otherApps, key = { it.packageName }) { app ->
+                        val checked = settings.selectedPackages.contains(app.packageName) ||
+                            pendingSelectedPackage == app.packageName
+                        val locked = !checked && !effectiveSettings.canSelectMore(app.packageName)
                         AppRow(
                             app = app,
                             checked = checked,
                             locked = locked,
                             onCheckedChange = { next ->
-                                scope.launch { store.togglePackage(app.packageName, next, settings) }
+                                scope.launch {
+                                    if (next && app.packageName !in settings.selectedPackages) {
+                                        pendingSelectedPackage = app.packageName
+                                        delay(450L)
+                                    }
+                                    store.togglePackage(app.packageName, next, settings)
+                                    if (pendingSelectedPackage == app.packageName) {
+                                        pendingSelectedPackage = null
+                                    }
+                                }
                             }
                         )
                     }
@@ -284,10 +642,6 @@ fun BlackWhiteApp() {
                     item {
                         ModeCard(
                             settings = settings,
-                            expanded = true,
-                            highlighted = false,
-                            showHeader = false,
-                            onToggleExpanded = {},
                             onQuickFilterStyleChange = { style -> scope.launch { store.setQuickFilterStyle(style) } }
                         )
                     }
@@ -297,14 +651,20 @@ fun BlackWhiteApp() {
                     item {
                         ScheduleCard(
                             settings = settings,
-                            expanded = true,
-                            highlighted = false,
-                            showHeader = false,
-                            onToggleExpanded = {},
+                            onOpenPro = { currentScreen = AppScreen.Pro },
                             onScheduleChange = { enabled -> scope.launch { store.setScheduleEnabled(enabled) } },
                             onScheduleForDaysChange = { days, start, end ->
                                 scope.launch { store.setScheduleForDays(days, start, end) }
                             }
+                        )
+                    }
+                }
+
+                AppScreen.Pro -> {
+                    item {
+                        ProUpgradeCard(
+                            settings = settings,
+                            onBack = { currentScreen = AppScreen.Home }
                         )
                     }
                 }
@@ -317,31 +677,63 @@ fun BlackWhiteApp() {
 private fun HeroCard(
     settings: BlackWhiteSettings,
     nowMillis: Long,
+    accessibilityEnabled: Boolean,
+    allowedAppLabel: String,
+    notice: String,
     onEnable: () -> Unit,
-    onDisable: () -> Unit,
-    onPause: () -> Unit
+    onPause15: () -> Unit,
+    onPause60: () -> Unit
 ) {
     val isPaused = settings.isPaused(nowMillis)
+    val hasSelectedApps = settings.selectedPackages.isNotEmpty()
+    val allowedRemainingLabel = if (settings.allowedUntilMillis > nowMillis) {
+        settings.allowedUntilMillis.remainingLabel(
+            nowMillis,
+            BlackWhiteSettings.ONE_APP_ALLOW_MINUTES * 60_000L
+        )
+    } else {
+        ""
+    }
+    val pauseCount = settings.pauseCountToday.coerceIn(0, BlackWhiteSettings.DAILY_PAUSE_LIMIT)
+    val allowedCount = settings.allowedAppCountToday.coerceIn(0, BlackWhiteSettings.DAILY_ALLOWED_APP_LIMIT)
+    val heroMessages = buildList {
+        if (settings.isAppEnabled && allowedRemainingLabel.isNotBlank() && allowedAppLabel.isNotBlank()) {
+            add("$allowedAppLabel разрешен еще $allowedRemainingLabel")
+        }
+        if (notice.isNotBlank()) {
+            add(notice)
+        }
+    }
     SectionCard {
         Text(
             when {
+                !hasSelectedApps -> "Выберите приложения"
+                !settings.isAppEnabled -> "Выключено до завтра"
                 isPaused -> "Пауза: ${settings.pauseRemainingLabel(nowMillis)}"
                 settings.isAppEnabled -> "Защита включена"
-                else -> "Выключено до завтра"
+                else -> "Выключено"
             },
             style = MaterialTheme.typography.headlineSmall,
             fontWeight = FontWeight.SemiBold,
             color = when {
+                !hasSelectedApps -> Color(0xFF444444)
+                !settings.isAppEnabled -> Color(0xFFB3261E)
                 isPaused -> Color(0xFF8A6D00)
                 settings.isAppEnabled -> Color(0xFF146C43)
-                else -> Color(0xFFB3261E)
+                else -> Color(0xFF444444)
             }
         )
-        Text(
-            "${settings.selectedPackages.size} прилож. под фильтром",
-            style = MaterialTheme.typography.bodyMedium,
-            color = Color(0xFF444444)
-        )
+        if (!hasSelectedApps) {
+            Text(
+                if (accessibilityEnabled) {
+                    "Защита заработает после выбора хотя бы одного приложения."
+                } else {
+                    "Чтобы фильтр заработал, выбери приложения и включи Accessibility Service."
+                },
+                style = MaterialTheme.typography.bodyMedium,
+                color = Color(0xFF444444)
+            )
+        }
         Spacer(Modifier.height(12.dp))
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -350,22 +742,362 @@ private fun HeroCard(
         ) {
             FilterChip(
                 modifier = Modifier.weight(1f).height(58.dp),
-                selected = settings.isAppEnabled && !isPaused,
+                selected = hasSelectedApps && settings.isAppEnabled && !isPaused,
                 onClick = onEnable,
-                label = { HeroButtonContent(Icons.Default.PowerSettingsNew, "вкл") }
-            )
-            FilterChip(
-                modifier = Modifier.weight(1f).height(58.dp),
-                selected = !settings.isAppEnabled,
-                onClick = onDisable,
-                label = { HeroButtonContent(Icons.Default.PowerOff, "до завтра") }
+                label = { HeroButtonContent(Icons.Default.PowerSettingsNew, "") }
             )
             FilterChip(
                 modifier = Modifier.weight(1f).height(58.dp),
                 selected = isPaused,
-                onClick = onPause,
-                label = { HeroButtonContent(Icons.Default.Pause, "15м") }
+                onClick = onPause15,
+                label = {
+                    HeroButtonContent(Icons.Default.Pause, "")
+                }
             )
+            FilterChip(
+                modifier = Modifier.weight(1f).height(58.dp),
+                selected = allowedRemainingLabel.isNotBlank() || (hasSelectedApps && !settings.isAppEnabled),
+                onClick = onPause60,
+                label = {
+                    HeroButtonContent(
+                        Icons.Default.Stop,
+                        "",
+                        iconSize = 30.dp
+                    )
+                }
+            )
+        }
+        Spacer(Modifier.height(4.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            HeroButtonCaption(
+                "вкл",
+                Modifier.weight(1f)
+            )
+            HeroButtonCaption(
+                "$pauseCount/${BlackWhiteSettings.DAILY_PAUSE_LIMIT}",
+                Modifier.weight(1f)
+            )
+            HeroButtonCaption(
+                "$allowedCount/${BlackWhiteSettings.DAILY_ALLOWED_APP_LIMIT}",
+                Modifier.weight(1f)
+            )
+        }
+        if (heroMessages.isNotEmpty()) {
+            Spacer(Modifier.height(10.dp))
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                heroMessages.forEach { message ->
+                    Text(
+                        message,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Color(0xFF8A6D00)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PauseOptionsCard(
+    settings: BlackWhiteSettings,
+    appLabels: Map<String, String>,
+    nowMillis: Long,
+    onAllowApp: (String) -> Unit,
+    onUsePauseInstead: () -> Unit,
+    onKeepEnabled: () -> Unit,
+    onConfirmDisableUntilTomorrow: () -> Unit
+) {
+    var showDisableConfirm by remember { mutableStateOf(false) }
+    var disableActionOnLeft by remember { mutableStateOf(false) }
+    var appToAllow by remember { mutableStateOf<Pair<String, String>?>(null) }
+    val allowedActive = settings.isAppEnabled &&
+        settings.allowedUntilMillis > nowMillis &&
+        settings.allowedPackageName.isNotBlank()
+    val allowedLabel = appLabels[settings.allowedPackageName] ?: settings.allowedPackageName
+    val allowedUsed = settings.allowedAppCountToday.coerceIn(0, BlackWhiteSettings.DAILY_ALLOWED_APP_LIMIT)
+    val canShowAllowUsage = !allowedActive
+    val selectedApps = settings.selectedPackages
+        .map { packageName -> packageName to (appLabels[packageName] ?: packageName) }
+        .sortedBy { it.second.lowercase() }
+
+    Column {
+        PauseOptionBlock(contentPadding = 0.dp) {
+            Column(Modifier.fillMaxWidth().padding(14.dp)) {
+                Text(
+                    "Раз в день можно на час выключать фильтр для одного приложения.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Color(0xFF444444)
+                )
+                if (canShowAllowUsage) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "Использовано сегодня: $allowedUsed из ${BlackWhiteSettings.DAILY_ALLOWED_APP_LIMIT}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Color(0xFF555555)
+                    )
+                }
+                if (allowedActive) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "$allowedLabel разрешено еще ${
+                            settings.allowedUntilMillis.remainingLabel(
+                                nowMillis,
+                                BlackWhiteSettings.ONE_APP_ALLOW_MINUTES * 60_000L
+                            )
+                        }",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Color(0xFF8A6D00),
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+            }
+            Spacer(Modifier.height(6.dp))
+
+            if (selectedApps.isEmpty()) {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = Color.White),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+                ) {
+                    Text(
+                        "Сначала выбери приложения для отслеживания.",
+                        modifier = Modifier.fillMaxWidth().padding(14.dp),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Color(0xFF444444)
+                    )
+                }
+            } else {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    selectedApps.forEach { (packageName, label) ->
+                        PauseAppRow(
+                            label = label,
+                            enabled = !settings.isPackageAllowed(packageName, nowMillis),
+                            active = settings.isPackageAllowed(packageName, nowMillis),
+                            onClick = {
+                                if (!settings.canAllowOneAppToday()) {
+                                    onAllowApp(packageName)
+                                } else {
+                                    appToAllow = packageName to label
+                                }
+                            }
+                        )
+                    }
+                }
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+        val openDisableConfirm = {
+            disableActionOnLeft = Random.nextBoolean()
+            showDisableConfirm = true
+        }
+        if (!settings.isAppEnabled) {
+            Button(
+                onClick = openDisableConfirm,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Icon(Icons.Default.PowerOff, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text("Выключить ScrollLess до завтра")
+            }
+        } else {
+            OutlinedButton(
+                onClick = openDisableConfirm,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Icon(Icons.Default.PowerOff, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text("Выключить ScrollLess до завтра")
+            }
+        }
+    }
+    if (showDisableConfirm) {
+        val canOfferExtraPause = settings.pauseCountToday < BlackWhiteSettings.DAILY_EMERGENCY_PAUSE_LIMIT
+        val isExtraPause = settings.pauseCountToday >= BlackWhiteSettings.DAILY_PAUSE_LIMIT
+        AlertDialog(
+            onDismissRequest = { showDisableConfirm = false },
+            text = {
+                Text(
+                    if (canOfferExtraPause) {
+                        if (isExtraPause) {
+                            "Паузы помогают сохранить контроль, лучше используйте их.\n\nДадим еще одну паузу на 15 минут."
+                        } else {
+                            "Паузы помогают сохранить контроль, лучше используйте их."
+                        }
+                    } else {
+                        "Дай себе шанс продержаться до завтра."
+                    }
+                )
+            },
+            confirmButton = {
+                if (disableActionOnLeft) {
+                    Button(
+                        onClick = {
+                            showDisableConfirm = false
+                            if (canOfferExtraPause) {
+                                onUsePauseInstead()
+                            } else {
+                                onKeepEnabled()
+                            }
+                        }
+                    ) {
+                        Text(if (canOfferExtraPause) "Пауза" else "Оставить")
+                    }
+                } else {
+                    TextButton(
+                        onClick = {
+                            showDisableConfirm = false
+                            onConfirmDisableUntilTomorrow()
+                        }
+                    ) {
+                        Text("Выключить")
+                    }
+                }
+            },
+            dismissButton = {
+                if (disableActionOnLeft) {
+                    TextButton(
+                        onClick = {
+                            showDisableConfirm = false
+                            onConfirmDisableUntilTomorrow()
+                        }
+                    ) {
+                        Text("Выключить")
+                    }
+                } else {
+                    Button(
+                        onClick = {
+                            showDisableConfirm = false
+                            if (canOfferExtraPause) {
+                                onUsePauseInstead()
+                            } else {
+                                onKeepEnabled()
+                            }
+                        }
+                    ) {
+                        Text(if (canOfferExtraPause) "Пауза" else "Оставить")
+                    }
+                }
+            }
+        )
+    }
+    appToAllow?.let { (packageName, label) ->
+        AlertDialog(
+            onDismissRequest = { appToAllow = null },
+            text = {
+                Text("Выключить фильтр для $label на 60 минут?")
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        appToAllow = null
+                        onAllowApp(packageName)
+                    }
+                ) {
+                    Text("Выключить")
+                }
+            },
+            dismissButton = {
+                Button(onClick = { appToAllow = null }) {
+                    Text("Оставить")
+                }
+            }
+        )
+    }
+}
+
+@Composable
+private fun PauseOptionBlock(
+    active: Boolean = false,
+    contentPadding: Dp = 16.dp,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    Card(
+        colors = CardDefaults.cardColors(
+            containerColor = if (active) Color(0xFFEAF4EE) else Color(0xFFF7F7F2)
+        ),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+    ) {
+        Column(Modifier.fillMaxWidth().padding(contentPadding), content = content)
+    }
+}
+
+@Composable
+private fun PauseIconButton(
+    active: Boolean,
+    enabled: Boolean,
+    inactiveIcon: ImageVector,
+    inactiveIconSize: Dp = 24.dp,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    OutlinedButton(
+        onClick = onClick,
+        enabled = enabled,
+        modifier = modifier.height(44.dp),
+        contentPadding = PaddingValues(0.dp),
+        border = BorderStroke(1.dp, Color(0xFF222222)),
+        colors = ButtonDefaults.outlinedButtonColors(
+            containerColor = Color.White,
+            contentColor = Color(0xFF222222),
+            disabledContainerColor = Color.White,
+            disabledContentColor = Color(0xFF777777)
+        )
+    ) {
+        Icon(
+            imageVector = if (active) Icons.Default.PlayArrow else inactiveIcon,
+            contentDescription = null,
+            modifier = Modifier.size(if (active) 24.dp else inactiveIconSize)
+        )
+    }
+}
+
+@Composable
+private fun PauseAppRow(
+    label: String,
+    enabled: Boolean,
+    active: Boolean,
+    onClick: () -> Unit
+) {
+    Card(
+        colors = CardDefaults.cardColors(
+            containerColor = if (active) Color(0xFFF0E7FF) else Color.White
+        ),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = Icons.Default.Apps,
+                contentDescription = null,
+                tint = if (active) Color(0xFF5E35B1) else Color(0xFF222222)
+            )
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(horizontal = 12.dp)
+            ) {
+                Text(label, fontWeight = FontWeight.Medium)
+            }
+            Box(
+                modifier = Modifier.width(56.dp),
+                contentAlignment = Alignment.CenterEnd
+            ) {
+                PauseIconButton(
+                    active = active,
+                    enabled = enabled && !active,
+                    inactiveIcon = Icons.Default.Stop,
+                    inactiveIconSize = 30.dp,
+                    modifier = Modifier.width(56.dp),
+                    onClick = onClick
+                )
+            }
         }
     }
 }
@@ -378,13 +1110,14 @@ private fun SettingsNavCard(
     onFilterClick: () -> Unit
 ) {
     val appsCountLabel = if (settings.isPro) {
-        "${settings.selectedPackages.size}/∞"
+        settings.selectedPackages.size.toString()
     } else {
-        "${settings.selectedPackages.size}/${BlackWhiteSettings.FREE_APP_LIMIT}"
+        "${settings.selectedPackages.size.coerceAtMost(BlackWhiteSettings.FREE_APP_LIMIT)}/${BlackWhiteSettings.FREE_APP_LIMIT}"
     }
+    val highlightApps = settings.selectedPackages.isEmpty()
     SectionCard {
         Text("Настройки", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-        Spacer(Modifier.height(10.dp))
+        Spacer(Modifier.height(4.dp))
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -394,60 +1127,153 @@ private fun SettingsNavCard(
                 modifier = Modifier.weight(1f).height(58.dp),
                 selected = false,
                 onClick = onAppsClick,
-                label = { AppsButtonContent(appsCountLabel) }
+                colors = FilterChipDefaults.filterChipColors(
+                    containerColor = if (highlightApps) Color(0xFFFFF1B8) else Color.Transparent,
+                    labelColor = Color(0xFF222222),
+                    iconColor = Color(0xFF222222)
+                ),
+                label = { AppsButtonContent() }
             )
             FilterChip(
                 modifier = Modifier.weight(1f).height(58.dp),
-                selected = false,
+                selected = settings.isPro && settings.scheduleEnabled,
                 onClick = onScheduleClick,
-                label = { HeroButtonContent(Icons.Default.Schedule, "расписание") }
+                label = { HeroButtonContent(Icons.Default.Schedule, "") }
             )
             FilterChip(
                 modifier = Modifier.weight(1f).height(58.dp),
                 selected = false,
                 onClick = onFilterClick,
-                label = { HeroButtonContent(Icons.Default.Visibility, "цвет") }
+                label = { HeroButtonContent(Icons.Default.Visibility, "") }
+            )
+        }
+        Spacer(Modifier.height(4.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            HeroButtonCaption(appsCountLabel, Modifier.weight(1f))
+            HeroButtonCaption("расписание", Modifier.weight(1f))
+            HeroButtonCaption("режим", Modifier.weight(1f))
+        }
+    }
+}
+
+@Composable
+private fun ProUpgradeCard(
+    settings: BlackWhiteSettings,
+    onBack: () -> Unit
+) {
+    SectionCard {
+        Text(
+            if (settings.isPro) "Pro включен" else "ScrollLess Pro",
+            style = MaterialTheme.typography.headlineSmall,
+            fontWeight = FontWeight.SemiBold
+        )
+        Spacer(Modifier.height(8.dp))
+        Text(
+            if (settings.isPro) {
+                "Сейчас открыт тестовый Pro-режим: можно выбирать больше двух приложений и пользоваться расписанием."
+            } else {
+                "Pro нужен, когда хочется настроить ScrollLess под себя и не ограничиваться двумя приложениями."
+            },
+            style = MaterialTheme.typography.bodyMedium,
+            color = Color(0xFF444444)
+        )
+        Spacer(Modifier.height(16.dp))
+        ProBenefitRow(
+            title = "Без лимита приложений",
+            description = "Добавляй все соцсети, мессенджеры и видео-приложения, где хочется меньше залипать."
+        )
+        ProBenefitRow(
+            title = "Расписание",
+            description = "Включай фильтр только в нужные часы: например, в рабочее время или вечером."
+        )
+        Spacer(Modifier.height(16.dp))
+        Button(
+            onClick = onBack,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text(if (settings.isPro) "Вернуться" else "Понятно")
+        }
+    }
+}
+
+@Composable
+private fun ProBenefitRow(
+    title: String,
+    description: String
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 7.dp),
+        verticalAlignment = Alignment.Top
+    ) {
+        Icon(
+            imageVector = Icons.Default.Lock,
+            contentDescription = null,
+            tint = Color(0xFF3A6652),
+            modifier = Modifier.padding(top = 1.dp)
+        )
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f)) {
+            Text(title, fontWeight = FontWeight.SemiBold)
+            Text(
+                description,
+                style = MaterialTheme.typography.bodyMedium,
+                color = Color(0xFF555555)
             )
         }
     }
 }
 
 @Composable
-private fun AppsButtonContent(countLabel: String) {
+private fun AppsButtonContent() {
     Column(
         modifier = Modifier.fillMaxWidth(),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Text(
-            countLabel,
+            "Apps",
             textAlign = TextAlign.Center,
             fontWeight = FontWeight.SemiBold,
-            fontSize = 15.sp,
-            maxLines = 1
-        )
-        Text(
-            "приложений",
-            textAlign = TextAlign.Center,
-            fontSize = 10.sp,
+            fontSize = 17.sp,
             maxLines = 1
         )
     }
 }
 
 @Composable
-private fun HeroButtonContent(icon: ImageVector, label: String) {
+private fun HeroButtonContent(icon: ImageVector, label: String, iconSize: Dp = 24.dp) {
     Column(
         modifier = Modifier.fillMaxWidth(),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Icon(icon, contentDescription = null)
-        Text(
-            label,
-            textAlign = TextAlign.Center,
-            fontSize = 10.sp,
-            maxLines = 1
-        )
+        Icon(icon, contentDescription = null, modifier = Modifier.size(iconSize))
+        if (label.isNotBlank()) {
+            Text(
+                label,
+                textAlign = TextAlign.Center,
+                fontSize = 10.sp,
+                maxLines = 1
+            )
+        }
     }
+}
+
+@Composable
+private fun HeroButtonCaption(label: String, modifier: Modifier = Modifier) {
+    Text(
+        label,
+        modifier = modifier,
+        textAlign = TextAlign.Center,
+        style = MaterialTheme.typography.bodySmall,
+        fontWeight = FontWeight.Medium,
+        color = Color(0xFF444444),
+        maxLines = 1
+    )
 }
 
 @Composable
@@ -460,8 +1286,14 @@ private fun IntroCard(onDismiss: () -> Unit) {
             style = MaterialTheme.typography.bodyMedium,
             color = Color(0xFF444444)
         )
-        Spacer(Modifier.height(10.dp))
-        Button(onClick = onDismiss) {
+        Spacer(Modifier.height(4.dp))
+        Button(
+            onClick = onDismiss,
+            colors = ButtonDefaults.buttonColors(
+                containerColor = Color(0xFFFFF1B8),
+                contentColor = Color(0xFF222222)
+            )
+        ) {
             Text("Понятно")
         }
     }
@@ -470,51 +1302,99 @@ private fun IntroCard(onDismiss: () -> Unit) {
 @Composable
 private fun UsageCard(
     settings: BlackWhiteSettings,
+    breakHistory: Map<Long, DailyBreakStats>,
     appLabels: Map<String, String>,
     systemUsage: SystemUsageSnapshot,
     usageStatsGranted: Boolean,
-    expanded: Boolean,
-    highlighted: Boolean,
-    onToggleExpanded: () -> Unit,
+    firstLaunchPreview: Boolean,
+    detailed: Boolean,
     candidateNotice: String,
-    onCandidateNoticeShown: () -> Unit,
+    onOpenDetails: () -> Unit,
+    onOpenPro: () -> Unit,
     onCandidateChange: (String, Boolean) -> Unit,
     onOpenUsageAccess: () -> Unit
 ) {
-    val selectedToday = settings.selectedPackages.sumOf { settings.usageToday[it] ?: 0L }
+    val todayUsage = settings.usageToday.maxMergedWith(systemUsage.today)
+    val selectedToday = settings.selectedPackages.sumOf { todayUsage[it] ?: 0L }
     val selectedYesterday = settings.selectedPackages.sumOf { settings.usageYesterday[it] ?: 0L }
-    val baselineUsage = settings.baselineUsage.ifEmpty { systemUsage.last7Days }
-    val baselineDailyUsage = settings.baselineDailyUsage.ifEmpty { systemUsage.last7DaysDaily }
-    val selectedBaselineDaily = settings.selectedPackages.sumOf { (baselineUsage[it] ?: 0L) / 7L }
-    val selectedAfterDaily = averageAfterUsage(settings.selectedPackages, settings.usageYesterday, settings.usageToday)
-    val averageSaved = (selectedBaselineDaily - selectedAfterDaily).coerceAtLeast(0L)
-    val weeklySaved = averageSaved * 7L
-    val currentTopCandidates = settings.usageToday
-        .filterKeys { it !in settings.selectedPackages }
+    val baselineDailyUsage = bestBaselineDailyUsage(
+        selectedPackages = settings.selectedPackages,
+        storedDailyUsage = settings.baselineDailyUsage,
+        liveDailyUsage = systemUsage.beforeInstallDailyUsage
+    )
+    val baselineUsage = when {
+        baselineDailyUsage.isNotEmpty() -> baselineDailyUsage.totalUsageByPackage()
+        settings.baselineUsage.isNotEmpty() -> settings.baselineUsage
+        else -> systemUsage.beforeInstallUsage
+    }
+    val chartDailyUsage = systemUsage.last7DaysDaily.withDailyFallback(settings.usageHistory)
+    val progressDays = buildCompletedProgressDays(
+        selectedPackages = settings.selectedPackages,
+        baselineDailyUsage = baselineDailyUsage,
+        dailyUsage = chartDailyUsage,
+        appInstallEpochDay = systemUsage.appInstallEpochDay
+    )
+    val baselineMeasuredEpochDays = measuredUsageEpochDays(settings.selectedPackages, baselineDailyUsage)
+    val selectedBaselineDaily = averageUsageOnDays(
+        selectedPackages = settings.selectedPackages,
+        dailyUsage = baselineDailyUsage,
+        totalUsage = baselineUsage,
+        days = baselineMeasuredEpochDays
+    )
+    val selectedAfterDaily = if (progressDays.isNotEmpty()) {
+        progressDays.sumOf { it.duration } / progressDays.size
+    } else {
+        0L
+    }
+    val baselineMeasuredDays = baselineMeasuredEpochDays.size
+    val displayedBaselineDaily = selectedBaselineDaily.toDisplayedMinuteMillis()
+    val displayedAfterDaily = selectedAfterDaily.toDisplayedMinuteMillis()
+    val averageDelta = displayedBaselineDaily - displayedAfterDaily
+    val averageSaved = averageDelta.coerceAtLeast(0L)
+    val candidatePackages = appLabels.keys
+        .filterNot { it.isSystemAppPackage() }
+        .toSet()
+    val currentTopCandidates = todayUsage
+        .filterKeys { it !in settings.selectedPackages && it in candidatePackages }
         .filterValues { it >= 60_000L }
         .entries
         .sortedByDescending { it.value }
         .take(5)
-    val historicalTopCandidates = baselineUsage
-        .filterKeys { it !in settings.selectedPackages }
-        .filterValues { it >= TimeUnit.MINUTES.toMillis(5) }
-        .entries
-        .sortedByDescending { it.value }
+    val historicalTopCandidates = baselineUsage.keys
+        .filter { it !in settings.selectedPackages && it in candidatePackages }
+        .mapNotNull { packageName ->
+            val duration = averageUsageOnMeasuredDays(setOf(packageName), baselineDailyUsage, baselineUsage)
+            if (duration >= TimeUnit.MINUTES.toMillis(5)) packageName to duration else null
+        }
+        .sortedByDescending { it.second }
         .take(5)
-    val topCandidates = if (historicalTopCandidates.isNotEmpty()) historicalTopCandidates else currentTopCandidates
-    var pinnedCandidates by remember { mutableStateOf<List<Map.Entry<String, Long>>>(emptyList()) }
-    LaunchedEffect(expanded, topCandidates) {
-        if (!expanded) {
+    val currentCandidatePairs = currentTopCandidates.map { it.key to it.value }
+    val topCandidates = historicalTopCandidates.ifEmpty { currentCandidatePairs }
+    var pinnedCandidates by remember { mutableStateOf<List<Pair<String, Long>>>(emptyList()) }
+    var candidatesExpanded by remember { mutableStateOf(false) }
+    LaunchedEffect(detailed, topCandidates) {
+        if (!detailed) {
             pinnedCandidates = emptyList()
+            candidatesExpanded = false
         } else if (pinnedCandidates.isEmpty()) {
             pinnedCandidates = topCandidates
         }
     }
-    val displayedCandidates = if (expanded && pinnedCandidates.isNotEmpty()) pinnedCandidates else topCandidates
+    val displayedCandidates = if (detailed && pinnedCandidates.isNotEmpty()) pinnedCandidates else topCandidates
     val summaryText = if (settings.selectedPackages.isEmpty()) {
         "Выбери приложения, и ScrollLess начнет считать время в них."
+    } else if (firstLaunchPreview && usageStatsGranted && selectedBaselineDaily > 0L) {
+        "История подключена.\n\nВы можете посмотреть, сколько выбранные приложения использовались до ScrollLess. Статистику \"После\" сейчас собираем."
+    } else if (firstLaunchPreview && usageStatsGranted) {
+        "История подключена. Выбери приложения, чтобы увидеть их использование до ScrollLess."
+    } else if (firstLaunchPreview) {
+        "Подключи историю Android, чтобы увидеть прогресс."
+    } else if (usageStatsGranted && selectedBaselineDaily > 0L && selectedAfterDaily > 0L && averageDelta >= 0L) {
+        "С подключенным ScrollLess выбранные приложения используются в среднем на ${averageSaved.formatDuration()} меньше в день. Это примерно ${(averageDelta * 7L).formatDuration()} в неделю."
     } else if (usageStatsGranted && selectedBaselineDaily > 0L && selectedAfterDaily > 0L) {
-        "С подключенным ScrollLess выбранные приложения используются в среднем на ${averageSaved.formatDuration()} меньше в день. Это примерно ${weeklySaved.formatDuration()} в неделю."
+        "Сейчас выбранные приложения используются на ${(-averageDelta).formatDuration()} больше старой нормы."
+    } else if (usageStatsGranted && selectedBaselineDaily > 0L && selectedAfterDaily <= 0L) {
+        "Ниже видно, сколько выбранные приложения использовались до ScrollLess. Статистику после этого пока собираем."
     } else if (usageStatsGranted && (selectedToday > 0L || selectedYesterday > 0L)) {
         "ScrollLess уже считает время в выбранных приложениях. Сравнение с прошлой привычкой появится после накопления первых данных."
     } else if (usageStatsGranted) {
@@ -523,64 +1403,114 @@ private fun UsageCard(
         "Подключи историю Android, чтобы увидеть прогресс."
     }
 
-    SectionCard(highlighted = highlighted) {
-        if (candidateNotice.isNotBlank()) {
-            LaunchedEffect(candidateNotice) {
-                delay(3_000L)
-                onCandidateNoticeShown()
-            }
+    SectionCard {
+        if (!detailed) {
+            Text("Прогресс", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(10.dp))
         }
-        SectionHeaderRow(
-            title = "Прогресс",
-            expanded = expanded,
-            highlighted = false,
-            onClick = onToggleExpanded
-        )
-        Spacer(Modifier.height(8.dp))
-        Text(
-            summaryText,
-            style = MaterialTheme.typography.bodyMedium,
-            color = Color(0xFF444444)
-        )
-        if (!expanded) return@SectionCard
-        Spacer(Modifier.height(10.dp))
         if (!usageStatsGranted) {
-            OutlinedButton(onClick = onOpenUsageAccess) {
+            Text(
+                summaryText,
+                style = MaterialTheme.typography.bodyMedium,
+                color = Color(0xFF444444)
+            )
+            Spacer(Modifier.height(10.dp))
+            OutlinedButton(
+                onClick = onOpenUsageAccess,
+                colors = ButtonDefaults.outlinedButtonColors(
+                    containerColor = Color(0xFFFFF1B8),
+                    contentColor = Color(0xFF222222)
+                ),
+                border = BorderStroke(1.dp, Color(0xFFE0A800))
+            ) {
                 Text("Подключить историю")
             }
         } else {
-            UsageChart(
-                settings = settings,
-                baselineDailyUsage = baselineDailyUsage,
-                baselineAverageDaily = selectedBaselineDaily
-            )
-            ProgressTable(
-                settings = settings,
-                appLabels = appLabels,
-                baselineUsage = baselineUsage
-            )
-            if (displayedCandidates.isNotEmpty()) {
-                Spacer(Modifier.height(12.dp))
-                Text("Похоже, здесь тоже уходит время", fontWeight = FontWeight.Medium)
-                Spacer(Modifier.height(4.dp))
-                if (candidateNotice.isNotBlank()) {
-                    Text(
-                        candidateNotice,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Color(0xFF8A6D00)
-                    )
-                    Spacer(Modifier.height(4.dp))
-                }
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    displayedCandidates.forEach { entry ->
-                        val duration = if (historicalTopCandidates.isNotEmpty()) entry.value / 7L else entry.value
-                        CandidateRow(
-                            label = appLabels[entry.key] ?: entry.key,
-                            packageName = entry.key,
-                            duration = duration,
-                            checked = settings.selectedPackages.contains(entry.key),
-                            onCheckedChange = { checked -> onCandidateChange(entry.key, checked) }
+            if (settings.selectedPackages.isEmpty() || selectedBaselineDaily <= 0L || selectedAfterDaily <= 0L) {
+                Text(
+                    summaryText,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Color(0xFF444444)
+                )
+            } else {
+                UsageDashboard(
+                    settings = settings,
+                    breakHistory = breakHistory,
+                    todayUsage = todayUsage,
+                    baselineAverageDaily = displayedBaselineDaily,
+                    selectedAfterDaily = displayedAfterDaily,
+                    averageDelta = averageDelta,
+                    baselineMeasuredDays = baselineMeasuredDays,
+                    showTrend = detailed,
+                    trackedAppsContent = {
+                        ProgressTable(
+                            settings = settings,
+                            appLabels = appLabels,
+                            baselineUsage = baselineUsage,
+                            baselineDailyUsage = baselineDailyUsage,
+                            baselineMeasuredDays = baselineMeasuredEpochDays,
+                            dailyUsage = chartDailyUsage,
+                            appInstallEpochDay = systemUsage.appInstallEpochDay
                         )
+                    }
+                )
+            }
+            if (!detailed) {
+                Spacer(Modifier.height(12.dp))
+                OutlinedButton(onClick = onOpenDetails, modifier = Modifier.fillMaxWidth()) {
+                    Text("Подробнее")
+                }
+                return@SectionCard
+            }
+            if (settings.selectedPackages.isNotEmpty() && (selectedBaselineDaily <= 0L || selectedAfterDaily <= 0L)) {
+                Spacer(Modifier.height(26.dp))
+                ProgressTable(
+                    settings = settings,
+                    appLabels = appLabels,
+                    baselineUsage = baselineUsage,
+                    baselineDailyUsage = baselineDailyUsage,
+                    baselineMeasuredDays = baselineMeasuredEpochDays,
+                    dailyUsage = chartDailyUsage,
+                    appInstallEpochDay = systemUsage.appInstallEpochDay
+                )
+                if (breakHistory.hasCompletedBreakDay()) {
+                    Spacer(Modifier.height(24.dp))
+                    BreakAverageCard(history = breakHistory)
+                }
+            }
+            if (displayedCandidates.isNotEmpty()) {
+                Spacer(Modifier.height(26.dp))
+                SectionHeaderRow(
+                    title = "На какие еще приложения уходит время",
+                    expanded = candidatesExpanded,
+                    onClick = { candidatesExpanded = !candidatesExpanded },
+                    fontWeight = FontWeight.Normal
+                )
+                if (candidatesExpanded) {
+                    Spacer(Modifier.height(8.dp))
+                    if (candidateNotice.isNotBlank()) {
+                        Text(
+                            candidateNotice,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color(0xFF8A6D00)
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        if (!settings.isPro && settings.selectedPackages.size >= BlackWhiteSettings.FREE_APP_LIMIT) {
+                            OutlinedButton(onClick = onOpenPro) {
+                                Text("Снять лимит")
+                            }
+                            Spacer(Modifier.height(8.dp))
+                        }
+                    }
+                    Column(verticalArrangement = Arrangement.spacedBy(0.dp)) {
+                        displayedCandidates.forEach { entry ->
+                            CandidateRow(
+                                label = appLabels[entry.first] ?: entry.first,
+                                duration = entry.second,
+                                checked = settings.selectedPackages.contains(entry.first),
+                                onCheckedChange = { checked -> onCandidateChange(entry.first, checked) }
+                            )
+                        }
                     }
                 }
             }
@@ -589,65 +1519,227 @@ private fun UsageCard(
 }
 
 @Composable
-private fun UsageChart(
+private fun UsageDashboard(
     settings: BlackWhiteSettings,
-    baselineDailyUsage: Map<Long, Map<String, Long>>,
-    baselineAverageDaily: Long
+    breakHistory: Map<Long, DailyBreakStats>,
+    todayUsage: Map<String, Long>,
+    baselineAverageDaily: Long,
+    selectedAfterDaily: Long,
+    averageDelta: Long,
+    baselineMeasuredDays: Int,
+    showTrend: Boolean,
+    trackedAppsContent: @Composable () -> Unit
 ) {
     if (settings.selectedPackages.isEmpty()) return
-    val todayEpochDay = LocalDate.now().toEpochDay()
-    val afterBars = listOf(
-        UsageBar("Вчера", settings.selectedPackages.sumOf { settings.usageYesterday[it] ?: 0L }, false),
-        UsageBar("Сегодня", settings.selectedPackages.sumOf { settings.usageToday[it] ?: 0L }, true)
-    ).filter { it.duration > 0L || it.isToday }
-    val beforeBars = (6L downTo 0L).map { daysAgo ->
-        val day = todayEpochDay - daysAgo
-        UsageBar(
-            label = if (daysAgo == 0L) "До" else "",
-            duration = settings.selectedPackages.sumOf { baselineDailyUsage[day]?.get(it) ?: 0L },
-            isToday = false
-        )
-    }.filter { it.duration > 0L }
-    val maxDuration = (beforeBars + afterBars).maxOfOrNull { it.duration }
-        ?.coerceAtLeast(baselineAverageDaily)
-        ?: baselineAverageDaily
-    if (maxDuration <= 0L) return
-
-    Spacer(Modifier.height(10.dp))
-    Text("Динамика времени", fontWeight = FontWeight.Medium)
-    Spacer(Modifier.height(4.dp))
+    if (baselineAverageDaily <= 0L) return
+    val selectedToday = settings.selectedPackages.sumOf { todayUsage[it] ?: 0L }
+    Spacer(Modifier.height(2.dp))
+    val savedTitle = when {
+        averageDelta > 0L -> "На ${averageDelta.formatDuration()} в день меньше"
+        averageDelta < 0L -> "На ${(-averageDelta).formatDuration()} в день больше"
+        else -> "Примерно столько же, как раньше"
+    }
+    val progressColor = when {
+        averageDelta > 0L -> Color(0xFF146C43)
+        averageDelta < 0L -> Color(0xFFB3261E)
+        else -> Color(0xFF444444)
+    }
     Text(
-        "Серая линия — среднее до ScrollLess. Зеленый — после, желтый — сегодняшний незавершенный день.",
-        style = MaterialTheme.typography.bodySmall,
-        color = Color(0xFF666666)
+        savedTitle,
+        modifier = Modifier.fillMaxWidth(),
+        style = MaterialTheme.typography.headlineSmall,
+        fontWeight = FontWeight.SemiBold,
+        color = progressColor,
+        textAlign = TextAlign.Center
     )
-    Spacer(Modifier.height(10.dp))
-    UsageBarChart(
-        beforeBars = beforeBars,
-        afterBars = afterBars,
-        baselineAverageDaily = baselineAverageDaily,
-        maxDuration = maxDuration
+    Text(
+        "в выбранных приложениях со ScrollLess",
+        modifier = Modifier.fillMaxWidth(),
+        style = MaterialTheme.typography.bodyMedium,
+        color = Color(0xFF444444),
+        textAlign = TextAlign.Center
     )
-    Spacer(Modifier.height(8.dp))
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-        Text("До: ${baselineAverageDaily.formatDuration()}/день", style = MaterialTheme.typography.bodySmall)
-        val afterAverage = averageAfterUsage(settings.selectedPackages, settings.usageYesterday, settings.usageToday)
-        Text("После: ${afterAverage.formatDuration()}/день", style = MaterialTheme.typography.bodySmall)
+    if (!showTrend) return
+    Spacer(Modifier.height(24.dp))
+    ProgressComparisonCard(
+        beforeDuration = baselineAverageDaily,
+        afterDuration = selectedAfterDaily
+    )
+    if (baselineMeasuredDays > 0) {
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "Старая норма рассчитана по $baselineMeasuredDays дням истории Android.",
+            style = MaterialTheme.typography.bodySmall,
+            color = Color(0xFF666666)
+        )
+    }
+    Spacer(Modifier.height(24.dp))
+    TodayUsageCard(
+        duration = selectedToday,
+        modifier = Modifier.fillMaxWidth()
+    )
+    Spacer(Modifier.height(24.dp))
+    trackedAppsContent()
+    if (breakHistory.hasCompletedBreakDay()) {
+        Spacer(Modifier.height(24.dp))
+        BreakAverageCard(history = breakHistory)
+    }
+}
+
+@Composable
+private fun BreakAverageCard(history: Map<Long, DailyBreakStats>) {
+    val today = LocalDate.now().toEpochDay()
+    val days = (6L downTo 0L).map { today - it }
+    val totalShortPauses = days.sumOf { history[it]?.pauseCount ?: 0 }
+    val totalLongPauses = days.sumOf { history[it]?.allowedAppCount ?: 0 }
+    val averageShortPauses = totalShortPauses.toDouble() / days.size
+    val averageLongPauses = totalLongPauses.toDouble() / days.size
+    Card(
+        colors = CardDefaults.cardColors(containerColor = Color(0xFFF1F1EC)),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text("Паузы в среднем за день", fontWeight = FontWeight.Medium)
+            BreakAverageRow("Пауза 15 минут", averageShortPauses)
+            BreakAverageRow("Пауза 60 минут", averageLongPauses)
+        }
+    }
+}
+
+@Composable
+private fun BreakAverageRow(label: String, value: Double) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            label,
+            modifier = Modifier.weight(1f),
+            style = MaterialTheme.typography.bodySmall,
+            color = Color(0xFF444444)
+        )
+        Text(
+            value.formatAverageCount(),
+            textAlign = TextAlign.End,
+            style = MaterialTheme.typography.bodySmall,
+            fontWeight = FontWeight.Medium
+        )
+    }
+}
+
+@Composable
+private fun ProgressComparisonCard(
+    beforeDuration: Long,
+    afterDuration: Long
+) {
+    val maxDuration = maxOf(beforeDuration, afterDuration).coerceAtLeast(1L)
+    Card(
+        colors = CardDefaults.cardColors(containerColor = Color(0xFFF1F1EC)),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            ProgressComparisonRow(
+                label = "До ScrollLess",
+                duration = beforeDuration,
+                maxDuration = maxDuration,
+                color = Color(0xFF9A9A94)
+            )
+            ProgressComparisonRow(
+                label = "Со ScrollLess",
+                duration = afterDuration,
+                maxDuration = maxDuration,
+                color = Color(0xFF3A6652)
+            )
+        }
+    }
+}
+
+@Composable
+private fun ProgressComparisonRow(
+    label: String,
+    duration: Long,
+    maxDuration: Long,
+    color: Color
+) {
+    val fillFraction = (duration.toFloat() / maxDuration.toFloat())
+        .coerceIn(0f, 1f)
+        .let { if (duration > 0L) it.coerceAtLeast(0.05f) else 0f }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            label,
+            modifier = Modifier.width(96.dp),
+            style = MaterialTheme.typography.bodySmall,
+            color = Color(0xFF444444)
+        )
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .height(16.dp)
+                .background(Color(0xFFE0E0DA))
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth(fillFraction)
+                    .height(16.dp)
+                    .background(color)
+            )
+        }
+        Text(
+            duration.formatDuration(),
+            modifier = Modifier.width(56.dp),
+            textAlign = TextAlign.End,
+            style = MaterialTheme.typography.bodySmall,
+            fontWeight = FontWeight.Medium
+        )
+    }
+}
+
+@Composable
+private fun TodayUsageCard(
+    duration: Long,
+    modifier: Modifier = Modifier
+) {
+    Card(
+        modifier = modifier,
+        colors = CardDefaults.cardColors(containerColor = Color(0xFFF1F1EC)),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+    ) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(
+                "Сегодня в выбранных приложениях",
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium,
+                color = Color(0xFF444444)
+            )
+            Text(
+                duration.formatDuration(),
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold
+            )
+        }
     }
 }
 
 @Composable
 private fun UsageBarChart(
-    beforeBars: List<UsageBar>,
-    afterBars: List<UsageBar>,
-    baselineAverageDaily: Long,
-    maxDuration: Long
+    bars: List<UsageBar>,
+    baselineAverageDaily: Long
 ) {
-    val bars = beforeBars + afterBars
+    val visibleBars = bars.ifEmpty { listOf(UsageBar("Пока", 0L, 0L)) }
+    val maxDuration = visibleBars.maxOfOrNull { maxOf(it.duration, it.baselineDuration) }
+        ?.coerceAtLeast(baselineAverageDaily)
+        ?: baselineAverageDaily
+    if (maxDuration <= 0L) return
     val baselineColor = Color(0xFF777777)
-    val beforeColor = Color(0xFFCACACA)
     val afterColor = Color(0xFF3A6652)
-    val todayColor = Color(0xFFE4B33D)
+    val emptyColor = Color(0xFFD8D8D2)
     Canvas(
         modifier = Modifier
             .fillMaxWidth()
@@ -658,72 +1750,120 @@ private fun UsageBarChart(
         val chartTop = 8.dp.toPx()
         val chartBottom = size.height - 26.dp.toPx()
         val chartHeight = (chartBottom - chartTop).coerceAtLeast(1f)
-        val baselineY = chartBottom - chartHeight * (baselineAverageDaily.toFloat() / maxDuration.toFloat())
-        drawLine(
-            color = baselineColor,
-            start = androidx.compose.ui.geometry.Offset(0f, baselineY),
-            end = androidx.compose.ui.geometry.Offset(size.width, baselineY),
-            strokeWidth = 2.dp.toPx(),
-            cap = StrokeCap.Round
-        )
-        if (bars.isEmpty()) return@Canvas
-        val slot = size.width / bars.size
+        val slot = size.width / visibleBars.size
         val barWidth = (slot * 0.52f).coerceAtMost(22.dp.toPx())
-        bars.forEachIndexed { index, bar ->
+        visibleBars.forEachIndexed { index, bar ->
             val barHeight = chartHeight * (bar.duration.toFloat() / maxDuration.toFloat())
             val left = index * slot + (slot - barWidth) / 2f
             val top = chartBottom - barHeight
             drawRoundRect(
                 color = when {
-                    bar.isToday -> todayColor
-                    index >= beforeBars.size -> afterColor
-                    else -> beforeColor
+                    bar.duration <= 0L -> emptyColor
+                    else -> afterColor
                 },
                 topLeft = androidx.compose.ui.geometry.Offset(left, top),
                 size = androidx.compose.ui.geometry.Size(barWidth, barHeight.coerceAtLeast(2.dp.toPx())),
                 cornerRadius = androidx.compose.ui.geometry.CornerRadius(4.dp.toPx(), 4.dp.toPx())
             )
+            if (bar.baselineDuration > 0L) {
+                val baselineY = chartBottom - chartHeight * (bar.baselineDuration.toFloat() / maxDuration.toFloat())
+                drawLine(
+                    color = baselineColor,
+                    start = androidx.compose.ui.geometry.Offset(left - 3.dp.toPx(), baselineY),
+                    end = androidx.compose.ui.geometry.Offset(left + barWidth + 3.dp.toPx(), baselineY),
+                    strokeWidth = 2.dp.toPx(),
+                    cap = StrokeCap.Round
+                )
+            }
         }
     }
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-        Text("7 дней до", style = MaterialTheme.typography.bodySmall, color = Color(0xFF666666))
-        Text("вчера / сегодня", style = MaterialTheme.typography.bodySmall, color = Color(0xFF666666))
+        visibleBars.forEach { bar ->
+            Text(
+                bar.label,
+                modifier = Modifier.weight(1f),
+                textAlign = TextAlign.Center,
+                style = MaterialTheme.typography.bodySmall,
+                color = Color(0xFF666666)
+            )
+        }
+    }
+}
+
+@Composable
+private fun UsageChartLegend() {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        ChartLegendItem(
+            label = "старая норма до ScrollLess",
+            color = Color(0xFF777777),
+            isLine = true
+        )
+        ChartLegendItem(
+            label = "дни со ScrollLess",
+            color = Color(0xFF3A6652),
+            isLine = false
+        )
+    }
+}
+
+@Composable
+private fun ChartLegendItem(
+    label: String,
+    color: Color,
+    isLine: Boolean
+) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(
+            modifier = Modifier
+                .width(28.dp)
+                .height(12.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Box(
+                modifier = Modifier
+                    .width(if (isLine) 24.dp else 12.dp)
+                    .height(if (isLine) 2.dp else 8.dp)
+                    .background(color)
+            )
+        }
+        Spacer(Modifier.width(6.dp))
+        Text(
+            label,
+            style = MaterialTheme.typography.bodySmall,
+            color = Color(0xFF555555)
+        )
     }
 }
 
 private data class UsageBar(
     val label: String,
     val duration: Long,
-    val isToday: Boolean
+    val baselineDuration: Long
 )
 
 @Composable
 private fun SectionHeaderRow(
     title: String,
     expanded: Boolean,
-    highlighted: Boolean,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    fontWeight: FontWeight = FontWeight.SemiBold
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .background(if (highlighted) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent)
             .clickable(onClick = onClick)
             .padding(vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(
             title,
-            modifier = Modifier
-                .weight(1f)
-                .padding(start = 8.dp),
+            modifier = Modifier.weight(1f),
             style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.SemiBold
+            fontWeight = fontWeight
         )
         Icon(
             imageVector = if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
-            contentDescription = null,
-            modifier = Modifier.padding(end = 8.dp)
+            contentDescription = null
         )
     }
 }
@@ -731,7 +1871,6 @@ private fun SectionHeaderRow(
 @Composable
 private fun CandidateRow(
     label: String,
-    packageName: String,
     duration: Long,
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit
@@ -743,14 +1882,14 @@ private fun CandidateRow(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(14.dp),
+                .padding(horizontal = 10.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Icon(Icons.Default.Apps, contentDescription = null, tint = Color(0xFF222222))
             Column(
                 modifier = Modifier
                     .weight(1f)
-                    .padding(horizontal = 12.dp)
+                    .padding(horizontal = 10.dp)
             ) {
                 Text(label, fontWeight = FontWeight.Medium)
                 Text(
@@ -758,7 +1897,6 @@ private fun CandidateRow(
                     style = MaterialTheme.typography.bodySmall,
                     color = Color(0xFF666666)
                 )
-                Text(packageName, style = MaterialTheme.typography.bodySmall, color = Color(0xFF666666))
             }
             Box(
                 modifier = Modifier.width(56.dp),
@@ -777,55 +1915,121 @@ private fun CandidateRow(
 private fun ProgressTable(
     settings: BlackWhiteSettings,
     appLabels: Map<String, String>,
-    baselineUsage: Map<String, Long>
+    baselineUsage: Map<String, Long>,
+    baselineDailyUsage: Map<Long, Map<String, Long>>,
+    baselineMeasuredDays: List<Long>,
+    dailyUsage: Map<Long, Map<String, Long>>,
+    appInstallEpochDay: Long
 ) {
     if (settings.selectedPackages.isEmpty()) return
-    Spacer(Modifier.height(12.dp))
-    Text("Отслеживаемые приложения", fontWeight = FontWeight.Medium)
-    Spacer(Modifier.height(6.dp))
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        Text("Приложение", modifier = Modifier.weight(1.1f), style = MaterialTheme.typography.bodySmall)
-        Text("До", modifier = Modifier.weight(0.7f), style = MaterialTheme.typography.bodySmall)
-        Text("После", modifier = Modifier.weight(0.7f), style = MaterialTheme.typography.bodySmall)
-        Text("Сегодня", modifier = Modifier.weight(0.7f), style = MaterialTheme.typography.bodySmall)
-    }
-    settings.selectedPackages
-        .sortedBy { appLabels[it] ?: it }
-        .forEach { packageName ->
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 3.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = Color(0xFFF1F1EC)),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(10.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    appLabels[packageName] ?: packageName,
-                    modifier = Modifier.weight(1.1f),
-                    style = MaterialTheme.typography.bodyMedium
+                    "Приложение",
+                    modifier = Modifier.weight(1.25f),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color(0xFF666666)
                 )
                 Text(
-                    ((baselineUsage[packageName] ?: 0L) / 7L).formatDuration(),
-                    modifier = Modifier.weight(0.7f),
-                    style = MaterialTheme.typography.bodyMedium
+                    "Было",
+                    modifier = Modifier.weight(0.62f),
+                    textAlign = TextAlign.End,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color(0xFF666666)
                 )
                 Text(
-                    averageAfterUsage(setOf(packageName), settings.usageYesterday, settings.usageToday).formatDuration(),
-                    modifier = Modifier.weight(0.7f),
-                    style = MaterialTheme.typography.bodyMedium
-                )
-                Text(
-                    (settings.usageToday[packageName] ?: 0L).formatDuration(),
-                    modifier = Modifier.weight(0.7f),
-                    style = MaterialTheme.typography.bodyMedium
+                    "Стало",
+                    modifier = Modifier.weight(0.72f),
+                    textAlign = TextAlign.End,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color(0xFF666666)
                 )
             }
+            settings.selectedPackages
+                .sortedBy { appLabels[it] ?: it }
+                .forEach { packageName ->
+                    val beforeDuration = averageUsageOnDays(
+                        selectedPackages = setOf(packageName),
+                        dailyUsage = baselineDailyUsage,
+                        totalUsage = baselineUsage,
+                        days = baselineMeasuredDays
+                    )
+                    val afterDuration = averageScrollLessUsage(
+                        setOf(packageName),
+                        dailyUsage,
+                        appInstallEpochDay = appInstallEpochDay
+                    )
+                    ProgressTableRow(
+                        appName = appLabels[packageName] ?: packageName,
+                        before = beforeDuration.formatDuration(),
+                        after = afterDuration.formatDuration()
+                    )
+                }
         }
+    }
+}
+
+@Composable
+private fun ProgressTableRow(
+    appName: String,
+    before: String,
+    after: String
+) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 10.dp, vertical = 9.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                appName,
+                modifier = Modifier.weight(1.25f),
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium,
+                maxLines = 1
+            )
+            ProgressTableValue(before, Modifier.weight(0.62f), Color(0xFF666666))
+            ProgressTableValue(after, Modifier.weight(0.72f), Color(0xFF3A6652))
+        }
+    }
+}
+
+@Composable
+private fun ProgressTableValue(
+    value: String,
+    modifier: Modifier,
+    color: Color
+) {
+    Text(
+        value,
+        modifier = modifier,
+        textAlign = TextAlign.End,
+        style = MaterialTheme.typography.bodySmall,
+        fontWeight = FontWeight.Medium,
+        color = color,
+        maxLines = 1
+    )
 }
 
 @Composable
 private fun AppsHeader(
-    settings: BlackWhiteSettings
+    settings: BlackWhiteSettings,
+    onOpenPro: () -> Unit
 ) {
+    if (settings.isPro) return
     SectionCard {
         Row(
             modifier = Modifier
@@ -834,19 +2038,44 @@ private fun AppsHeader(
         ) {
             Column(Modifier.weight(1f)) {
                 Text(
-                    text = "Приложения (${settings.selectedPackages.size}/${if (settings.isPro) "∞" else BlackWhiteSettings.FREE_APP_LIMIT})",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold
-                )
-                Text(
-                    when {
-                        !settings.isPro -> "В Free можно выбрать 2 приложения. Pro снимает лимит."
-                        else -> "Выбранные приложения будут отображаться сверху."
-                    },
+                    "В Free можно выбрать 2 приложения. Pro снимает лимит.",
                     style = MaterialTheme.typography.bodyMedium,
-                    color = if (settings.isPro) Color(0xFF444444) else Color(0xFF8A6D00)
+                    color = Color(0xFF8A6D00)
                 )
+                if (settings.selectedPackages.size >= BlackWhiteSettings.FREE_APP_LIMIT) {
+                    Spacer(Modifier.height(8.dp))
+                    Button(onClick = onOpenPro) {
+                        Text("Снять лимит")
+                    }
+                }
             }
+        }
+    }
+}
+
+@Composable
+private fun AppsGroupHeader(
+    title: String,
+    description: String?
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 4.dp, vertical = 8.dp)
+    ) {
+        Text(
+            title,
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.SemiBold,
+            color = Color(0xFF444444)
+        )
+        if (description != null) {
+            Spacer(Modifier.height(4.dp))
+            Text(
+                description,
+                style = MaterialTheme.typography.bodyMedium,
+                color = Color(0xFF555555)
+            )
         }
     }
 }
@@ -854,43 +2083,29 @@ private fun AppsHeader(
 @Composable
 private fun ModeCard(
     settings: BlackWhiteSettings,
-    expanded: Boolean,
-    highlighted: Boolean,
-    showHeader: Boolean = true,
-    onToggleExpanded: () -> Unit,
     onQuickFilterStyleChange: (QuickFilterStyle) -> Unit
 ) {
-    SectionCard(highlighted = highlighted) {
-        if (showHeader) {
-            SectionHeaderRow(
-                title = "Цвет экрана",
-                expanded = expanded,
-                highlighted = false,
-                onClick = onToggleExpanded
-            )
-            Spacer(Modifier.height(8.dp))
-        }
+    SectionCard {
         Text(
             text = if (settings.quickFilterStyle == QuickFilterStyle.Dark) {
-                "Сейчас выбран строгий темный режим."
+                "Сейчас выбран темный режим."
             } else {
-                "Сейчас выбран мягкий светлый режим."
+                "Сейчас выбран светлый режим."
             },
             style = MaterialTheme.typography.bodyMedium,
             color = Color(0xFF444444)
         )
-        if (!expanded) return@SectionCard
         Spacer(Modifier.height(12.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             FilterChip(
                 selected = settings.quickFilterStyle == QuickFilterStyle.Light,
                 onClick = { onQuickFilterStyleChange(QuickFilterStyle.Light) },
-                label = { Text("Мягкий") }
+                label = { Text("Светлый") }
             )
             FilterChip(
                 selected = settings.quickFilterStyle == QuickFilterStyle.Dark,
                 onClick = { onQuickFilterStyleChange(QuickFilterStyle.Dark) },
-                label = { Text("Строгий") }
+                label = { Text("Темный") }
             )
         }
         Spacer(Modifier.height(12.dp))
@@ -964,59 +2179,58 @@ private fun PermissionsCard(
 @Composable
 private fun ScheduleCard(
     settings: BlackWhiteSettings,
-    expanded: Boolean,
-    highlighted: Boolean,
-    showHeader: Boolean = true,
-    onToggleExpanded: () -> Unit,
+    onOpenPro: () -> Unit,
     onScheduleChange: (Boolean) -> Unit,
     onScheduleForDaysChange: (Set<Int>, Int, Int) -> Unit
 ) {
     val weekdaySchedule = settings.daySchedules[1] ?: DaySchedule()
     val weekendSchedule = settings.daySchedules[6] ?: DaySchedule()
-    SectionCard(highlighted = highlighted) {
-        if (showHeader) {
-            ScheduleHeaderRow(
-                settings = settings,
-                expanded = expanded,
-                weekdaySchedule = weekdaySchedule,
-                weekendSchedule = weekendSchedule,
-                onClick = onToggleExpanded
-            )
-        } else {
+    SectionCard {
+        if (!settings.isPro || !settings.scheduleEnabled) {
             Text(
-                when {
-                    !settings.isPro -> "Pro добавляет расписание: фильтр будет включаться только в выбранные часы."
-                    settings.scheduleEnabled -> "Включено: будни ${weekdaySchedule.shortRange()}, выходные ${weekendSchedule.shortRange()}."
-                    else -> "Если выключено, фильтр работает всегда."
+                if (!settings.isPro) {
+                    "Pro добавляет расписание: фильтр будет включаться только в выбранные часы."
+                } else {
+                    "Сейчас фильтр работает постоянно."
                 },
                 style = MaterialTheme.typography.bodyMedium,
                 color = if (settings.isPro) Color(0xFF444444) else Color(0xFF8A6D00)
             )
         }
-        if (expanded) {
+        if (!settings.isPro) {
+            Spacer(Modifier.height(10.dp))
+            Button(onClick = onOpenPro) {
+                Text("Открыть Pro")
+            }
+        }
+        if (!settings.isPro || !settings.scheduleEnabled) {
             Spacer(Modifier.height(12.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Включить расписание", modifier = Modifier.weight(1f), fontWeight = FontWeight.Medium)
-                Switch(
-                    checked = settings.isPro && settings.scheduleEnabled,
-                    onCheckedChange = onScheduleChange,
-                    enabled = settings.isPro
-                )
-            }
-            if (settings.isPro && settings.scheduleEnabled) {
-                Spacer(Modifier.height(12.dp))
-                ScheduleGroupRow(
-                    label = "Будни",
-                    schedule = weekdaySchedule,
-                    onScheduleChange = { start, end -> onScheduleForDaysChange(WeekdayScheduleDays, start, end) }
-                )
-                Spacer(Modifier.height(8.dp))
-                ScheduleGroupRow(
-                    label = "Выходные",
-                    schedule = weekendSchedule,
-                    onScheduleChange = { start, end -> onScheduleForDaysChange(WeekendScheduleDays, start, end) }
-                )
-            }
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                if (settings.isPro && settings.scheduleEnabled) "Расписание включено" else "Включить расписание",
+                modifier = Modifier.weight(1f),
+                fontWeight = FontWeight.Medium
+            )
+            Switch(
+                checked = settings.isPro && settings.scheduleEnabled,
+                onCheckedChange = onScheduleChange,
+                enabled = settings.isPro
+            )
+        }
+        if (settings.isPro && settings.scheduleEnabled) {
+            Spacer(Modifier.height(12.dp))
+            ScheduleGroupRow(
+                label = "Будни",
+                schedule = weekdaySchedule,
+                onScheduleChange = { start, end -> onScheduleForDaysChange(WeekdayScheduleDays, start, end) }
+            )
+            Spacer(Modifier.height(8.dp))
+            ScheduleGroupRow(
+                label = "Выходные",
+                schedule = weekendSchedule,
+                onScheduleChange = { start, end -> onScheduleForDaysChange(WeekendScheduleDays, start, end) }
+            )
         }
     }
 }
@@ -1024,7 +2238,10 @@ private fun ScheduleCard(
 @Composable
 private fun DeveloperProCard(
     settings: BlackWhiteSettings,
-    onProChange: (Boolean) -> Unit
+    onProChange: (Boolean) -> Unit,
+    onTestStatsChange: (Boolean) -> Unit,
+    onFirstLaunchPreviewChange: (Boolean) -> Unit,
+    onResetBreakCounters: () -> Unit
 ) {
     SectionCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1042,45 +2259,51 @@ private fun DeveloperProCard(
             }
             Switch(checked = settings.isPro, onCheckedChange = onProChange)
         }
-    }
-}
-
-@Composable
-private fun ScheduleHeaderRow(
-    settings: BlackWhiteSettings,
-    expanded: Boolean,
-    weekdaySchedule: DaySchedule,
-    weekendSchedule: DaySchedule,
-    onClick: () -> Unit
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .padding(vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Column(
-            modifier = Modifier
-                .weight(1f)
-                .padding(start = 8.dp)
-        ) {
-            Text("Расписание", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-            Text(
-                when {
-                    !settings.isPro -> "Pro добавляет расписание: фильтр будет включаться только в выбранные часы."
-                    settings.scheduleEnabled -> "Включено: будни ${weekdaySchedule.shortRange()}, выходные ${weekendSchedule.shortRange()}."
-                    else -> "Если выключено, фильтр работает всегда."
-                },
-                style = MaterialTheme.typography.bodyMedium,
-                color = if (settings.isPro) Color(0xFF444444) else Color(0xFF8A6D00)
+        Spacer(Modifier.height(12.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Тестовая статистика", fontWeight = FontWeight.Medium)
+                Text(
+                    if (settings.testStatsEnabled) {
+                        "Подставляет демо-данные для проверки прогресса, графика и рекомендаций."
+                    } else {
+                        "Позволяет проверить экран прогресса без реальной истории Android."
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Color(0xFF444444)
+                )
+            }
+            Switch(
+                checked = settings.testStatsEnabled,
+                onCheckedChange = onTestStatsChange
             )
         }
-        Icon(
-            imageVector = if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
-            contentDescription = null,
-            modifier = Modifier.padding(end = 8.dp)
-        )
+        Spacer(Modifier.height(12.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Режим первого запуска", fontWeight = FontWeight.Medium)
+                Text(
+                    if (settings.firstLaunchPreview) {
+                        "Системная история временно скрыта, данные ScrollLess сброшены."
+                    } else {
+                        "Показывает приложение как после чистой установки."
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Color(0xFF444444)
+                )
+            }
+            Switch(
+                checked = settings.firstLaunchPreview,
+                onCheckedChange = onFirstLaunchPreviewChange
+            )
+        }
+        Spacer(Modifier.height(12.dp))
+        OutlinedButton(
+            onClick = onResetBreakCounters,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("Сбросить счётчики пауз")
+        }
     }
 }
 
@@ -1156,7 +2379,6 @@ private fun AppRow(
                     .padding(horizontal = 12.dp)
             ) {
                 Text(app.label, fontWeight = FontWeight.Medium)
-                Text(app.packageName, style = MaterialTheme.typography.bodySmall, color = Color(0xFF666666))
             }
             Box(
                 modifier = Modifier.width(56.dp),
@@ -1174,20 +2396,15 @@ private fun AppRow(
 
 @Composable
 private fun SectionCard(
-    highlighted: Boolean = false,
     content: @Composable ColumnScope.() -> Unit
 ) {
     Card(
-        colors = CardDefaults.cardColors(
-            containerColor = if (highlighted) ExpandedSectionColor else Color.White
-        ),
+        colors = CardDefaults.cardColors(containerColor = Color.White),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
     ) {
         Column(Modifier.fillMaxWidth().padding(16.dp), content = content)
     }
 }
-
-private val ExpandedSectionColor = Color(0xFFDADDD9)
 
 @Composable
 private fun BlackWhiteTheme(content: @Composable () -> Unit) {
@@ -1218,6 +2435,7 @@ private fun Context.loadLaunchableApps(): List<InstalledApp> {
         }
         .distinctBy { it.packageName }
         .filterNot { it.packageName == packageName }
+        .filterNot { it.packageName.isSystemAppPackage() || it.label.isSystemAppLabel() }
         .sortedBy { it.label.lowercase() }
 }
 
@@ -1226,6 +2444,31 @@ private fun List<InstalledApp>.sortedForSelection(selectedPackages: Set<String>)
         compareByDescending<InstalledApp> { selectedPackages.contains(it.packageName) }
             .thenBy { it.label.lowercase() }
     )
+}
+
+private fun List<InstalledApp>.recommendedForSelection(): List<InstalledApp> {
+    val recommendedPackages = RecommendedAppPackages.toSet()
+    return filter { it.packageName in recommendedPackages }
+        .sortedBy { it.label.lowercase() }
+}
+
+private fun List<InstalledApp>.alphabeticalExcept(excludedPackages: Set<String>): List<InstalledApp> {
+    return filterNot { it.packageName in excludedPackages }
+        .sortedBy { it.label.lowercase() }
+}
+
+private fun String.isSystemAppPackage(): Boolean {
+    val lower = lowercase()
+    return lower in SystemAppPackageDenylist ||
+        "launcher" in lower ||
+        lower.startsWith("com.google.android.apps.nexus")
+}
+
+private fun String.isSystemAppLabel(): Boolean {
+    val lower = lowercase()
+    return "launcher" in lower ||
+        "pixel launcher" in lower ||
+        "nexus launcher" in lower
 }
 
 data class PermissionSnapshot(
@@ -1264,22 +2507,70 @@ private fun Context.hasUsageStatsPermission(): Boolean {
 }
 
 private fun Context.loadSystemUsageSnapshot(): SystemUsageSnapshot {
-    if (!hasUsageStatsPermission()) return SystemUsageSnapshot()
+    val installEpochDay = appInstallEpochDay()
+    if (!hasUsageStatsPermission()) {
+        return SystemUsageSnapshot(appInstallEpochDay = installEpochDay)
+    }
     val usageStatsManager = getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
     val now = System.currentTimeMillis()
     val start = now - TimeUnit.DAYS.toMillis(7)
-    val stats = usageStatsManager.queryUsageStats(UsageStatsManager.INTERVAL_DAILY, start, now).orEmpty()
-    val usage = stats
-        .groupBy { it.packageName }
-        .mapValues { entry -> entry.value.sumOf { it.totalTimeInForeground } }
+    val installDayStart = LocalDate.ofEpochDay(installEpochDay)
+        .atStartOfDay(ZoneId.systemDefault())
+        .toInstant()
+        .toEpochMilli()
+    val beforeInstallStart = installDayStart - TimeUnit.DAYS.toMillis(BASELINE_LOOKBACK_DAYS)
+    val todayStart = LocalDate.now()
+        .atStartOfDay(ZoneId.systemDefault())
+        .toInstant()
+        .toEpochMilli()
+    val dailyUsage = usageStatsManager.queryForegroundUsageByEventsDaily(start, now)
+    val beforeInstallDailyUsage = usageStatsManager.queryDailyUsageStats(beforeInstallStart, installDayStart)
+    val usage = dailyUsage.totalUsageByPackage()
+    val beforeInstallUsage = beforeInstallDailyUsage.totalUsageByPackage()
+    val todayUsage = usageStatsManager.queryForegroundUsageByEvents(todayStart, now)
+    return SystemUsageSnapshot(
+        last7Days = usage,
+        last7DaysDaily = dailyUsage,
+        beforeInstallUsage = beforeInstallUsage,
+        beforeInstallDailyUsage = beforeInstallDailyUsage,
+        today = todayUsage,
+        appInstallEpochDay = installEpochDay
+    )
+}
+
+private fun Map<Long, Map<String, Long>>.totalUsageByPackage(): Map<String, Long> {
+    return values
+        .flatMap { it.entries }
+        .groupBy { it.key }
+        .mapValues { entry -> entry.value.sumOf { it.value } }
         .filterValues { it > 0L }
-    val dailyUsage = stats
-        .groupBy { usageStat ->
-            Instant.ofEpochMilli(usageStat.firstTimeStamp)
-                .atZone(ZoneId.systemDefault())
-                .toLocalDate()
-                .toEpochDay()
-        }
+}
+
+private fun UsageStatsManager.queryDailyUsageStats(
+    startMillis: Long,
+    endMillis: Long
+): Map<Long, Map<String, Long>> {
+    val startDay = Instant.ofEpochMilli(startMillis)
+        .atZone(ZoneId.systemDefault())
+        .toLocalDate()
+        .toEpochDay()
+    val endDayExclusive = Instant.ofEpochMilli(endMillis)
+        .atZone(ZoneId.systemDefault())
+        .toLocalDate()
+        .toEpochDay()
+    return queryUsageStats(UsageStatsManager.INTERVAL_DAILY, startMillis, endMillis)
+        .orEmpty()
+        .toDailyUsageByPackage()
+        .filterKeys { it in startDay until endDayExclusive }
+}
+
+private fun List<UsageStats>.toDailyUsageByPackage(): Map<Long, Map<String, Long>> {
+    return groupBy { usageStat ->
+        Instant.ofEpochMilli(usageStat.firstTimeStamp)
+            .atZone(ZoneId.systemDefault())
+            .toLocalDate()
+            .toEpochDay()
+    }
         .mapValues { dayEntry ->
             dayEntry.value
                 .groupBy { it.packageName }
@@ -1287,7 +2578,126 @@ private fun Context.loadSystemUsageSnapshot(): SystemUsageSnapshot {
                 .filterValues { it > 0L }
         }
         .filterValues { it.isNotEmpty() }
-    return SystemUsageSnapshot(last7Days = usage, last7DaysDaily = dailyUsage)
+}
+
+private fun Context.appInstallEpochDay(): Long {
+    val firstInstallTime = runCatching {
+        packageManager.getPackageInfo(packageName, 0).firstInstallTime
+    }.getOrDefault(System.currentTimeMillis())
+    return Instant.ofEpochMilli(firstInstallTime)
+        .atZone(ZoneId.systemDefault())
+        .toLocalDate()
+        .toEpochDay()
+}
+
+private fun UsageStatsManager.queryForegroundUsageByEvents(startMillis: Long, endMillis: Long): Map<String, Long> {
+    val events = queryEvents(startMillis, endMillis)
+    val event = UsageEvents.Event()
+    val totals = mutableMapOf<String, Long>()
+    var foregroundPackageName: String? = null
+    var foregroundStartedAt = 0L
+
+    fun closeForeground(atMillis: Long) {
+        val packageName = foregroundPackageName ?: return
+        val duration = (atMillis.coerceAtMost(endMillis) - foregroundStartedAt).coerceAtLeast(0L)
+        if (duration > 0L) {
+            totals[packageName] = (totals[packageName] ?: 0L) + duration
+        }
+        foregroundPackageName = null
+        foregroundStartedAt = 0L
+    }
+
+    while (events.hasNextEvent()) {
+        events.getNextEvent(event)
+        val packageName = event.packageName ?: continue
+        val eventTime = event.timeStamp.coerceIn(startMillis, endMillis)
+        when (event.eventType) {
+            UsageEvents.Event.ACTIVITY_RESUMED,
+            UsageEvents.Event.MOVE_TO_FOREGROUND -> {
+                if (foregroundPackageName != packageName) {
+                    closeForeground(eventTime)
+                    foregroundPackageName = packageName
+                    foregroundStartedAt = eventTime
+                }
+            }
+
+            UsageEvents.Event.ACTIVITY_PAUSED,
+            UsageEvents.Event.MOVE_TO_BACKGROUND -> {
+                if (foregroundPackageName == packageName) {
+                    closeForeground(eventTime)
+                }
+            }
+        }
+    }
+
+    closeForeground(endMillis)
+    return totals.filterValues { it > 0L }
+}
+
+private fun UsageStatsManager.queryForegroundUsageByEventsDaily(
+    startMillis: Long,
+    endMillis: Long
+): Map<Long, Map<String, Long>> {
+    val events = queryEvents(startMillis, endMillis)
+    val event = UsageEvents.Event()
+    val totals = mutableMapOf<Long, MutableMap<String, Long>>()
+    var foregroundPackageName: String? = null
+    var foregroundStartedAt = 0L
+
+    fun addDuration(packageName: String, fromMillis: Long, toMillis: Long) {
+        var from = fromMillis.coerceAtLeast(startMillis)
+        val to = toMillis.coerceAtMost(endMillis)
+        while (from < to) {
+            val fromDate = Instant.ofEpochMilli(from).atZone(ZoneId.systemDefault()).toLocalDate()
+            val nextDayStart = fromDate.plusDays(1)
+                .atStartOfDay(ZoneId.systemDefault())
+                .toInstant()
+                .toEpochMilli()
+            val chunkEnd = minOf(to, nextDayStart)
+            val duration = (chunkEnd - from).coerceAtLeast(0L)
+            if (duration > 0L) {
+                val day = fromDate.toEpochDay()
+                val dayTotals = totals.getOrPut(day) { mutableMapOf() }
+                dayTotals[packageName] = (dayTotals[packageName] ?: 0L) + duration
+            }
+            from = chunkEnd
+        }
+    }
+
+    fun closeForeground(atMillis: Long) {
+        val packageName = foregroundPackageName ?: return
+        addDuration(packageName, foregroundStartedAt, atMillis)
+        foregroundPackageName = null
+        foregroundStartedAt = 0L
+    }
+
+    while (events.hasNextEvent()) {
+        events.getNextEvent(event)
+        val packageName = event.packageName ?: continue
+        val eventTime = event.timeStamp.coerceIn(startMillis, endMillis)
+        when (event.eventType) {
+            UsageEvents.Event.ACTIVITY_RESUMED,
+            UsageEvents.Event.MOVE_TO_FOREGROUND -> {
+                if (foregroundPackageName != packageName) {
+                    closeForeground(eventTime)
+                    foregroundPackageName = packageName
+                    foregroundStartedAt = eventTime
+                }
+            }
+
+            UsageEvents.Event.ACTIVITY_PAUSED,
+            UsageEvents.Event.MOVE_TO_BACKGROUND -> {
+                if (foregroundPackageName == packageName) {
+                    closeForeground(eventTime)
+                }
+            }
+        }
+    }
+
+    closeForeground(endMillis)
+    return totals
+        .mapValues { dayEntry -> dayEntry.value.filterValues { it > 0L } }
+        .filterValues { it.isNotEmpty() }
 }
 
 private fun Int.asHour(): String {
@@ -1298,8 +2708,125 @@ private fun DaySchedule.shortRange(): String {
     return "${startHour.asHour()}-${endHour.asHour()}"
 }
 
+private fun BlackWhiteSettings.withTestStatsSelection(): BlackWhiteSettings {
+    return copy(
+        isPro = true,
+        selectedPackages = setOf(
+            TEST_FACEBOOK_PACKAGE,
+            TEST_INSTAGRAM_PACKAGE,
+            TEST_YOUTUBE_PACKAGE
+        )
+    )
+}
+
+private fun buildTestUsageSnapshot(): SystemUsageSnapshot {
+    val today = LocalDate.now().toEpochDay()
+    val installDay = today - 6L
+    val beforeInstallDaily = ((BASELINE_LOOKBACK_DAYS + 6L) downTo 7L).associate { daysAgo ->
+        val day = today - daysAgo
+        day to mapOf(
+            TEST_FACEBOOK_PACKAGE to testMinutes(day, weekday = 50, weekend = 95),
+            TEST_INSTAGRAM_PACKAGE to testMinutes(day, weekday = 105, weekend = 155),
+            TEST_YOUTUBE_PACKAGE to testMinutes(day, weekday = 85, weekend = 145),
+            TEST_DUOCARDS_PACKAGE to testMinutes(day, weekday = 42, weekend = 55),
+            TEST_TELEGRAM_PACKAGE to testMinutes(day, weekday = 38, weekend = 50),
+            TEST_TWITTER_PACKAGE to testMinutes(day, weekday = 28, weekend = 65)
+        )
+    }
+    val scrollLessDaily = (6L downTo 1L).associate { daysAgo ->
+        val day = today - daysAgo
+        day to mapOf(
+            TEST_FACEBOOK_PACKAGE to testMinutes(day, weekday = 28, weekend = 58),
+            TEST_INSTAGRAM_PACKAGE to testMinutes(day, weekday = 62, weekend = 100),
+            TEST_YOUTUBE_PACKAGE to testMinutes(day, weekday = 55, weekend = 92),
+            TEST_DUOCARDS_PACKAGE to testMinutes(day, weekday = 40, weekend = 52),
+            TEST_TELEGRAM_PACKAGE to testMinutes(day, weekday = 34, weekend = 44),
+            TEST_TWITTER_PACKAGE to testMinutes(day, weekday = 15, weekend = 32)
+        )
+    }
+    val todayUsage = mapOf(
+        TEST_FACEBOOK_PACKAGE to TimeUnit.MINUTES.toMillis(18),
+        TEST_INSTAGRAM_PACKAGE to TimeUnit.MINUTES.toMillis(41),
+        TEST_YOUTUBE_PACKAGE to TimeUnit.MINUTES.toMillis(36),
+        TEST_DUOCARDS_PACKAGE to TimeUnit.MINUTES.toMillis(31),
+        TEST_TELEGRAM_PACKAGE to TimeUnit.MINUTES.toMillis(22),
+        TEST_TWITTER_PACKAGE to TimeUnit.MINUTES.toMillis(9)
+    )
+    return SystemUsageSnapshot(
+        last7Days = scrollLessDaily.totalUsageByPackage(),
+        last7DaysDaily = scrollLessDaily,
+        beforeInstallUsage = beforeInstallDaily.totalUsageByPackage(),
+        beforeInstallDailyUsage = beforeInstallDaily,
+        today = todayUsage,
+        appInstallEpochDay = installDay
+    )
+}
+
+private fun buildTestBreakHistory(): Map<Long, DailyBreakStats> {
+    val today = LocalDate.now().toEpochDay()
+    return mapOf(
+        today - 6L to DailyBreakStats(pauseCount = 1, allowedAppCount = 0),
+        today - 5L to DailyBreakStats(pauseCount = 2, allowedAppCount = 1),
+        today - 4L to DailyBreakStats(pauseCount = 1, allowedAppCount = 0),
+        today - 3L to DailyBreakStats(pauseCount = 3, allowedAppCount = 1),
+        today - 2L to DailyBreakStats(pauseCount = 1, allowedAppCount = 0),
+        today - 1L to DailyBreakStats(pauseCount = 2, allowedAppCount = 1)
+    )
+}
+
+private fun testMinutes(epochDay: Long, weekday: Long, weekend: Long): Long {
+    val isWeekend = LocalDate.ofEpochDay(epochDay).dayOfWeek.value >= 6
+    val minutes = if (isWeekend) weekend else weekday
+    return TimeUnit.MINUTES.toMillis(minutes)
+}
+
+private fun Long.shortDayLabel(): String {
+    return when (LocalDate.ofEpochDay(this).dayOfWeek.value) {
+        1 -> "Пн"
+        2 -> "Вт"
+        3 -> "Ср"
+        4 -> "Чт"
+        5 -> "Пт"
+        6 -> "Сб"
+        else -> "Вс"
+    }
+}
+
+private fun Map<String, Long>.maxMergedWith(other: Map<String, Long>): Map<String, Long> {
+    if (isEmpty()) return other
+    if (other.isEmpty()) return this
+    return (keys + other.keys).associateWith { key ->
+        maxOf(this[key] ?: 0L, other[key] ?: 0L)
+    }.filterValues { it > 0L }
+}
+
+private fun Map<String, Long>.withFallback(fallback: Map<String, Long>): Map<String, Long> {
+    if (isEmpty()) return fallback
+    if (fallback.isEmpty()) return this
+    return (keys + fallback.keys).associateWith { key ->
+        val storedValue = this[key] ?: 0L
+        if (storedValue > 0L) storedValue else fallback[key] ?: 0L
+    }.filterValues { it > 0L }
+}
+
+private fun Map<Long, Map<String, Long>>.withDailyFallback(
+    fallback: Map<Long, Map<String, Long>>
+): Map<Long, Map<String, Long>> {
+    if (isEmpty()) return fallback
+    if (fallback.isEmpty()) return this
+    return (keys + fallback.keys).associateWith { day ->
+        (this[day].orEmpty()).withFallback(fallback[day].orEmpty())
+    }.filterValues { it.isNotEmpty() }
+}
+
 private fun BlackWhiteSettings.pauseRemainingLabel(nowMillis: Long): String {
-    val remainingSeconds = ((pausedUntilMillis - nowMillis).coerceAtLeast(0L) + 999L) / 1_000L
+    return pausedUntilMillis.remainingLabel(nowMillis)
+}
+
+private fun Long.remainingLabel(nowMillis: Long, maxRemainingMillis: Long? = null): String {
+    val remainingMillis = (this - nowMillis).coerceAtLeast(0L)
+    val cappedRemainingMillis = maxRemainingMillis?.let { remainingMillis.coerceAtMost(it) } ?: remainingMillis
+    val remainingSeconds = (cappedRemainingMillis + 999L) / 1_000L
     val minutes = remainingSeconds / 60L
     val seconds = remainingSeconds % 60L
     return "${minutes}:${seconds.toString().padStart(2, '0')}"
@@ -1316,32 +2843,140 @@ private fun Long.formatDuration(): String {
     }
 }
 
-private fun averageAfterUsage(
-    selectedPackages: Set<String>,
-    yesterdayUsage: Map<String, Long>,
-    todayUsage: Map<String, Long>
-): Long {
-    if (selectedPackages.isEmpty()) return 0L
-    val yesterdayTotal = selectedPackages.sumOf { yesterdayUsage[it] ?: 0L }
-    val todayTotal = selectedPackages.sumOf { todayUsage[it] ?: 0L }
-    val sampleDays = listOf(yesterdayTotal, todayTotal).count { it > 0L }.coerceAtLeast(1)
-    return (yesterdayTotal + todayTotal) / sampleDays
+private fun Double.formatAverageCount(): String {
+    val tenths = (this.coerceAtLeast(0.0) * 10.0 + 0.5).toInt()
+    val whole = tenths / 10
+    val fraction = tenths % 10
+    return if (fraction == 0) whole.toString() else "$whole,$fraction"
 }
 
-private fun Long.progressComparedTo(previousMillis: Long): String {
-    val delta = this - previousMillis
-    if (delta == 0L) return "Столько же, сколько вчера."
-    val percent = ((kotlin.math.abs(delta).toDouble() / previousMillis) * 100).toInt()
-    return if (delta < 0L) {
-        "На ${(-delta).formatDuration()} меньше, чем вчера ($percent%)."
-    } else {
-        "На ${delta.formatDuration()} больше, чем вчера ($percent%)."
+private fun Map<Long, DailyBreakStats>.hasCompletedBreakDay(): Boolean {
+    val today = LocalDate.now().toEpochDay()
+    return keys.any { it < today }
+}
+
+private fun Long.toDisplayedMinuteMillis(): Long {
+    return (this / 60_000L).coerceAtLeast(0L) * 60_000L
+}
+
+private fun averageUsageOnMeasuredDays(
+    selectedPackages: Set<String>,
+    dailyUsage: Map<Long, Map<String, Long>>,
+    totalUsage: Map<String, Long>
+): Long {
+    if (selectedPackages.isEmpty()) return 0L
+    val dailyTotals = dailyUsage.values.map { dayUsage ->
+        selectedPackages.sumOf { dayUsage[it] ?: 0L }
     }
+    val measuredDays = dailyTotals.filter { it > 0L }
+    if (measuredDays.isNotEmpty()) {
+        return measuredDays.sum() / measuredDays.size
+    }
+    return selectedPackages.sumOf { totalUsage[it] ?: 0L } / BASELINE_LOOKBACK_DAYS
+}
+
+private fun averageUsageOnDays(
+    selectedPackages: Set<String>,
+    dailyUsage: Map<Long, Map<String, Long>>,
+    totalUsage: Map<String, Long>,
+    days: List<Long>
+): Long {
+    if (selectedPackages.isEmpty()) return 0L
+    if (days.isEmpty()) {
+        return averageUsageOnMeasuredDays(selectedPackages, dailyUsage, totalUsage)
+    }
+    return days.sumOf { day ->
+        selectedPackages.sumOf { packageName -> dailyUsage[day]?.get(packageName) ?: 0L }
+    } / days.size
+}
+
+private fun measuredUsageEpochDays(
+    selectedPackages: Set<String>,
+    dailyUsage: Map<Long, Map<String, Long>>
+): List<Long> {
+    if (selectedPackages.isEmpty()) return emptyList()
+    return dailyUsage
+        .filterValues { dayUsage -> selectedPackages.sumOf { dayUsage[it] ?: 0L } > 0L }
+        .keys
+        .sorted()
+}
+
+private fun measuredUsageDays(
+    selectedPackages: Set<String>,
+    dailyUsage: Map<Long, Map<String, Long>>
+): Int {
+    return measuredUsageEpochDays(selectedPackages, dailyUsage).size
+}
+
+private fun bestBaselineDailyUsage(
+    selectedPackages: Set<String>,
+    storedDailyUsage: Map<Long, Map<String, Long>>,
+    liveDailyUsage: Map<Long, Map<String, Long>>
+): Map<Long, Map<String, Long>> {
+    if (storedDailyUsage.isEmpty()) return liveDailyUsage
+    if (liveDailyUsage.isEmpty()) return storedDailyUsage
+    val liveMeasuredDays = measuredUsageDays(selectedPackages, liveDailyUsage)
+    val storedMeasuredDays = measuredUsageDays(selectedPackages, storedDailyUsage)
+    return if (liveMeasuredDays > storedMeasuredDays) liveDailyUsage else storedDailyUsage
+}
+
+private fun buildCompletedProgressDays(
+    selectedPackages: Set<String>,
+    baselineDailyUsage: Map<Long, Map<String, Long>>,
+    dailyUsage: Map<Long, Map<String, Long>>,
+    appInstallEpochDay: Long
+): List<UsageBar> {
+    if (selectedPackages.isEmpty()) return emptyList()
+    val todayEpochDay = LocalDate.now().toEpochDay()
+    val firstScrollLessDay = (appInstallEpochDay + 1L).coerceAtMost(todayEpochDay)
+    val firstChartDay = maxOf(firstScrollLessDay, todayEpochDay - 6L)
+    return (firstChartDay until todayEpochDay).map { day ->
+        val duration = selectedPackages.sumOf { dailyUsage[day]?.get(it) ?: 0L }
+        UsageBar(
+            label = day.shortDayLabel(),
+            duration = duration,
+            baselineDuration = baselineForWeekday(
+                selectedPackages = selectedPackages,
+                baselineDailyUsage = baselineDailyUsage,
+                targetEpochDay = day
+            )
+        )
+    }
+}
+
+private fun baselineForWeekday(
+    selectedPackages: Set<String>,
+    baselineDailyUsage: Map<Long, Map<String, Long>>,
+    targetEpochDay: Long
+): Long {
+    val targetDayOfWeek = LocalDate.ofEpochDay(targetEpochDay).dayOfWeek
+    val matchingDays = baselineDailyUsage
+        .filterKeys { LocalDate.ofEpochDay(it).dayOfWeek == targetDayOfWeek }
+        .values
+        .map { dayUsage -> selectedPackages.sumOf { dayUsage[it] ?: 0L } }
+        .filter { it > 0L }
+    return if (matchingDays.isNotEmpty()) matchingDays.sum() / matchingDays.size else 0L
+}
+
+private fun averageScrollLessUsage(
+    selectedPackages: Set<String>,
+    dailyUsage: Map<Long, Map<String, Long>>,
+    appInstallEpochDay: Long
+): Long {
+    if (selectedPackages.isEmpty()) return 0L
+    val todayEpochDay = LocalDate.now().toEpochDay()
+    val firstScrollLessDay = (appInstallEpochDay + 1L).coerceAtMost(todayEpochDay)
+    val firstChartDay = maxOf(firstScrollLessDay, todayEpochDay - 6L)
+    if (firstChartDay >= todayEpochDay) return 0L
+    val dailyTotals = (firstChartDay until todayEpochDay).map { day ->
+        selectedPackages.sumOf { dailyUsage[day]?.get(it) ?: 0L }
+    }
+    return dailyTotals.sum() / dailyTotals.size
 }
 
 private fun QuickFilterStyle.overlayColor(): Color {
     return when (this) {
         QuickFilterStyle.Light -> Color(166, 166, 166, 220)
-        QuickFilterStyle.Dark -> Color(24, 24, 24, 235)
+        QuickFilterStyle.Dark -> Color(24, 24, 24, 205)
     }
 }
