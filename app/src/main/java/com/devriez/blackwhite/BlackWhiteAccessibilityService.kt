@@ -213,6 +213,11 @@ class BlackWhiteAccessibilityService : AccessibilityService() {
     }
 
     private fun selectedForegroundPackageName(allowStickyFallback: Boolean): String? {
+        val activeRootPackage = activeRootPackageName()
+        if (activeRootPackage.isLauncherPackage()) {
+            return null
+        }
+
         selectedActiveWindowPackageName()?.let { return it }
 
         val eventPackage = currentPackageName
@@ -231,21 +236,14 @@ class BlackWhiteAccessibilityService : AccessibilityService() {
             return stickyPackage
         }
 
-        if (
-            allowStickyFallback &&
-            overlayView != null &&
-            stickyPackage in currentSettings.selectedPackages &&
-            eventPackage.isLauncherPackage() &&
-            visibleSelectedWindowPackageName() == stickyPackage
-        ) {
-            return stickyPackage
-        }
-
         return null
     }
 
     private fun selectedActiveWindowPackageName(): String? {
         val activeRootPackage = rootInActiveWindow?.packageName?.toString()
+        if (activeRootPackage.isLauncherPackage()) {
+            return null
+        }
         if (activeRootPackage in currentSettings.selectedPackages) {
             return activeRootPackage
         }
