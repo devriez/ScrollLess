@@ -217,11 +217,14 @@ class BlackWhiteAccessibilityService : AccessibilityService() {
         if (activeRootPackage.isLauncherPackage()) {
             return null
         }
+        if (activeRootPackage.isRegularNonSelectedApp()) {
+            return null
+        }
 
         selectedActiveWindowPackageName()?.let { return it }
 
         val eventPackage = currentPackageName
-        if (eventPackage in currentSettings.selectedPackages) {
+        if (activeRootPackage.isShortSystemInterruption() && eventPackage in currentSettings.selectedPackages) {
             return eventPackage
         }
 
@@ -242,6 +245,9 @@ class BlackWhiteAccessibilityService : AccessibilityService() {
     private fun selectedActiveWindowPackageName(): String? {
         val activeRootPackage = rootInActiveWindow?.packageName?.toString()
         if (activeRootPackage.isLauncherPackage()) {
+            return null
+        }
+        if (activeRootPackage.isRegularNonSelectedApp()) {
             return null
         }
         if (activeRootPackage in currentSettings.selectedPackages) {
@@ -356,6 +362,12 @@ class BlackWhiteAccessibilityService : AccessibilityService() {
         private const val FILTER_CLEAR_DELAY_MS = 100L
         private const val PROTECTION_FLUSH_INTERVAL_MS = 5_000L
         private const val STICKY_FALLBACK_MS = 5_000L
+    }
+
+    private fun String?.isRegularNonSelectedApp(): Boolean {
+        return this != null &&
+            this !in currentSettings.selectedPackages &&
+            !this.isShortSystemInterruption()
     }
 }
 
