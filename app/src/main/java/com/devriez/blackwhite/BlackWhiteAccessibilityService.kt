@@ -37,6 +37,9 @@ class BlackWhiteAccessibilityService : AccessibilityService() {
     private var protectionFlushJob: Job? = null
     private var allowedRefreshJob: Job? = null
     private var lastPublishedActivePackageName: String? = null
+    private var filterRampPackageName: String? = null
+    private var filterRampStartedAtMillis: Long = 0L
+    private var overlayRampJob: Job? = null
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -66,6 +69,7 @@ class BlackWhiteAccessibilityService : AccessibilityService() {
         pendingClearJob?.cancel()
         protectionFlushJob?.cancel()
         allowedRefreshJob?.cancel()
+        overlayRampJob?.cancel()
         clearFilters()
         scope.cancel()
         super.onDestroy()
@@ -154,10 +158,12 @@ class BlackWhiteAccessibilityService : AccessibilityService() {
         when (currentSettings.filterMode) {
             FilterMode.Quick -> {
                 disableFullModeIfNeeded()
+                startOrResetFilterRamp(foregroundPackageName)
                 showQuickOverlay()
             }
 
             FilterMode.Full -> {
+                stopFilterRamp()
                 hideQuickOverlay()
                 enableFullModeIfAllowed()
             }
@@ -186,6 +192,7 @@ class BlackWhiteAccessibilityService : AccessibilityService() {
             } else {
                 startProtectionTimer()
                 lastSelectedPackageName = selectedForegroundPackage
+                startOrResetFilterRamp(selectedForegroundPackage)
             }
         }
     }
@@ -314,10 +321,54 @@ class BlackWhiteAccessibilityService : AccessibilityService() {
     }
 
     private fun quickOverlayColor(): Int {
+        val progress = filterRampProgress()
         return when (currentSettings.quickFilterStyle) {
-            QuickFilterStyle.Light -> Color.argb(220, 166, 166, 166)
-            QuickFilterStyle.Dark -> Color.argb(205, 24, 24, 24)
+            QuickFilterStyle.Light -> Color.argb(
+                lerpInt(LIGHT_FILTER_START_ALPHA, LIGHT_FILTER_END_ALPHA, progress),
+                166,
+                166,
+                166
+            )
+            QuickFilterStyle.Dark -> Color.argb(
+                lerpInt(DARK_FILTER_START_ALPHA, DARK_FILTER_END_ALPHA, progress),
+                24,
+                24,
+                24
+            )
         }
+    }
+
+    private fun startOrResetFilterRamp(packageName: String) {
+        if (filterRampPackageName != packageName) {
+            filterRampPackageName = packageName
+            filterRampStartedAtMillis = System.currentTimeMillis()
+        }
+        if (overlayRampJob?.isActive == true) return
+        overlayRampJob = scope.launch {
+            while (true) {
+                delay(OVERLAY_RAMP_UPDATE_MS)
+                overlayView?.setBackgroundColor(quickOverlayColor())
+            }
+        }
+    }
+
+    private fun stopFilterRamp() {
+        overlayRampJob?.cancel()
+        overlayRampJob = null
+        filterRampPackageName = null
+        filterRampStartedAtMillis = 0L
+    }
+
+    private fun filterRampProgress(): Float {
+        val startedAt = filterRampStartedAtMillis
+        if (startedAt <= 0L) return 0f
+        val raw = ((System.currentTimeMillis() - startedAt).toFloat() / OVERLAY_RAMP_DURATION_MS)
+            .coerceIn(0f, 1f)
+        return raw * raw * (3f - 2f * raw)
+    }
+
+    private fun lerpInt(start: Int, end: Int, progress: Float): Int {
+        return (start + (end - start) * progress).toInt().coerceIn(0, 255)
     }
 
     private fun hideQuickOverlay() {
@@ -351,6 +402,7 @@ class BlackWhiteAccessibilityService : AccessibilityService() {
     }
 
     private fun clearFilters() {
+        stopFilterRamp()
         hideQuickOverlay()
         disableFullModeIfNeeded()
     }
@@ -362,6 +414,12 @@ class BlackWhiteAccessibilityService : AccessibilityService() {
         private const val FILTER_CLEAR_DELAY_MS = 100L
         private const val PROTECTION_FLUSH_INTERVAL_MS = 5_000L
         private const val STICKY_FALLBACK_MS = 5_000L
+        private const val OVERLAY_RAMP_UPDATE_MS = 5_000L
+        private const val OVERLAY_RAMP_DURATION_MS = 120_000L
+        private const val LIGHT_FILTER_START_ALPHA = 220
+        private const val LIGHT_FILTER_END_ALPHA = 248
+        private const val DARK_FILTER_START_ALPHA = 205
+        private const val DARK_FILTER_END_ALPHA = 238
     }
 
     private fun String?.isRegularNonSelectedApp(): Boolean {

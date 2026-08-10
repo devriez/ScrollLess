@@ -434,8 +434,7 @@ fun BlackWhiteApp() {
                                 candidateNotice = ""
                                 firstLaunchHistoryRequested = false
                                 scope.launch { store.setFirstLaunchPreview(enabled) }
-                            },
-                            onResetBreakCounters = { scope.launch { store.resetBreakCounters() } }
+                            }
                         )
                     }
                 }
@@ -2240,8 +2239,7 @@ private fun DeveloperProCard(
     settings: BlackWhiteSettings,
     onProChange: (Boolean) -> Unit,
     onTestStatsChange: (Boolean) -> Unit,
-    onFirstLaunchPreviewChange: (Boolean) -> Unit,
-    onResetBreakCounters: () -> Unit
+    onFirstLaunchPreviewChange: (Boolean) -> Unit
 ) {
     SectionCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -2296,13 +2294,6 @@ private fun DeveloperProCard(
                 checked = settings.firstLaunchPreview,
                 onCheckedChange = onFirstLaunchPreviewChange
             )
-        }
-        Spacer(Modifier.height(12.dp))
-        OutlinedButton(
-            onClick = onResetBreakCounters,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Text("Сбросить счётчики пауз")
         }
     }
 }
